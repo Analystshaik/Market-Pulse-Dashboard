@@ -3565,3 +3565,10 @@ def render_market_pulse_dashboard():
                 filter_state,
                 key=f"{reference}_{timeframe}_{section_key}",
             )
+
+# Allow Streamlit Community Cloud to launch this module directly.
+# The normal wrapper entrypoint (app_market_pulse.py) still works because
+# this block runs only when this file itself is the Streamlit main module.
+if __name__ == "__main__":
+    render_market_pulse_dashboard()
+
