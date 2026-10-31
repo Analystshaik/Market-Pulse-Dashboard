@@ -1,0 +1,11 @@
+The deployed database must be named:
+
+    data/actionable_cloud.sqlite
+
+Run 01_PREPARE_CLOUD.bat after extracting this Cloud directory under:
+
+    C:\TLT-TBT-Trading System\Cloud
+
+The script copies the latest compact DB from:
+
+    C:\TLT-TBT-Trading System\data\actionable_cloud.sqlite

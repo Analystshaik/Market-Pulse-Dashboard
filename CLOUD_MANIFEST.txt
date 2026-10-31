@@ -1,0 +1,37 @@
+FILES THAT BELONG IN THE CLOUD GITHUB REPOSITORY
+==================================================
+
+APPLICATION ENTRYPOINTS
+-----------------------
+app_tlt_actionable_daily_fast.py
+app_tlt_actionable_weekly_fast.py
+app_tbt_actionable_daily_fast.py
+app_tbt_actionable_weekly_fast.py
+app_market_pulse.py
+
+SHARED APPLICATION MODULES
+--------------------------
+client_actionable_dashboard.py
+market_pulse_dashboard.py
+
+DATA
+----
+data/actionable_cloud.sqlite
+  Copied from the local project by 01_PREPARE_CLOUD.bat.
+
+CLOUD ENVIRONMENT
+-----------------
+requirements.txt
+.streamlit/config.toml
+.gitattributes
+.gitignore
+
+DEPLOYMENT / MAINTENANCE
+------------------------
+01_PREPARE_CLOUD.bat
+02_GITHUB_FIRST_DEPLOY.bat
+03_PUSH_CLOUD_UPDATE.bat
+04_VALIDATE_ONLY.bat
+validate_cloud_package.py
+DEPLOYMENT_GUIDE.md
+README.md

@@ -1,0 +1,7 @@
+streamlit==1.66.1
+streamlit-aggrid==1.2.1.post2
+pandas>=2.0,<3
+numpy>=1.24,<3
+plotly>=5.24,<7
+yfinance>=0.2.54,<1
+openpyxl>=3.1,<4
