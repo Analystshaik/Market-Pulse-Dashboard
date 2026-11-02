@@ -1,0 +1,3 @@
+from monthly_tlt_comparison_dashboard import render_monthly_tlt_comparison_dashboard
+
+render_monthly_tlt_comparison_dashboard()
