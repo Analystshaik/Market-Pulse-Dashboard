@@ -979,6 +979,11 @@ def _entry_reversal_date(row, timeframe: str):
 
 def _entry_reversal_pattern(row, timeframe: str):
     primary = "daily_reversal_pattern" if timeframe == "DAILY" else "weekly_reversal_pattern"
+    # Price structure is a valid independent setup; do not label a Buy as
+    # "Awaiting reversal" or show an old bearish candle as the Buy catalyst.
+    if _safe_text(row.get("client_trade_basis"), "") == "DAILY_UPTREND":
+        return ("Higher high + higher low (daily)" if timeframe == "DAILY"
+                else "Daily higher high + higher low (weekly pending)")
     pattern = _safe_text(row.get(primary), "")
     if pattern:
         return pattern
@@ -1002,12 +1007,25 @@ def _signal_comment_for_row(row, reference: str, timeframe: str, weekly_valid: b
     trade_valid = _num(row.get("client_trade_valid"))
     actionable_now = _num(row.get("client_actionable_now"))
 
-    if pd.notna(bearish_date):
-        pattern = bearish_pattern or "Bearish reversal"
-        return f"Hold: {pattern} · {bearish_date:%b %d, %Y}"
-
+    # A confirmed uptrend can reactivate a stock after a *past* daily bearish
+    # pattern, but never when a confirmed WEEKLY bearish reversal or the
+    # reference weekly regime has invalidated the long thesis.
     if not weekly_valid:
         return f"Hold: {reference} Weekly thesis inactive"
+
+    weekly_bearish_block = _num(row.get("client_weekly_bearish_block"))
+    if pd.notna(weekly_bearish_block) and int(weekly_bearish_block) == 1:
+        pattern = _safe_text(row.get("client_weekly_bearish_reversal_pattern_detected"), "Weekly bearish reversal")
+        return f"Hold: {pattern} (weekly)"
+
+    valid = (pd.notna(trade_valid) and int(trade_valid) == 1)
+    basis = _safe_text(row.get("client_trade_basis"), "")
+    if valid and basis == "DAILY_UPTREND":
+        return "Intact: daily higher high + higher low"
+
+    if pd.notna(bearish_date) and not valid:
+        pattern = bearish_pattern or "Bearish reversal"
+        return f"Hold: {pattern} · {bearish_date:%b %d, %Y}"
 
     if pd.notna(trade_valid) and int(trade_valid) == 1:
         return "Intact: long setup favorable"
@@ -3475,8 +3493,9 @@ def render_market_pulse_dashboard():
 
     _render_grid(
         "Actionable Now",
-        f"Active stock trades remain Buy while the {reference} Weekly bullish thesis is intact "
-        f"and the individual stock has not printed its own {timeframe.title()} bearish reversal.",
+        f"Buy: valid reversal setup OR confirmed daily uptrend, while the {reference} "
+        f"Weekly thesis remains active and no newer confirmed stock Weekly "
+        f"bearish reversal blocks the trade.",
         actionable_now,
         reference,
         timeframe,

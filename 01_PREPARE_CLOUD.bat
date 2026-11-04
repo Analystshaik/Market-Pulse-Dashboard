@@ -23,6 +23,12 @@ if not exist "..\data\actionable_cloud.sqlite" ( echo ERROR: ..\data\actionable_
 if not exist "data" mkdir "data"
 copy /Y "..\data\actionable_cloud.sqlite" "data\actionable_cloud.sqlite" >nul
 if errorlevel 1 ( echo ERROR: Could not copy actionable_cloud.sqlite. & exit /b 1 )
+python ADD_TREND_TABLE_TO_CLOUD.py
+if errorlevel 1 (
+    echo ERROR: Could not add daily trend table to compact Cloud DB.
+    exit /b 1
+)
+
 python validate_cloud_package.py
 if errorlevel 1 ( echo CLOUD PACKAGE VALIDATION FAILED. & exit /b 1 )
 echo.
