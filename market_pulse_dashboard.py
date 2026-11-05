@@ -42,6 +42,14 @@ APP_DIR = Path(__file__).resolve().parent
 
 MIN_CLIENT_UPSIDE_PCT = 25.0
 
+# Presentation-only exclusions. The 25%-upside eligibility gate still uses
+# the full underlying snapshot; no rating, quote, target or trade data changes.
+MP_REMOVED_GRID_COLUMNS = (
+    "Daily Reversal Date",
+    "Weekly Reversal Date",
+    "Analyst Median",
+)
+
 SECTOR_NAMES = {
     "XLC": "Communication Services",
     "XLY": "Consumer Discretionary",
@@ -770,7 +778,7 @@ def _market_card_figure(bars: pd.DataFrame, day_mode: bool = False):
 
 def _render_market_index_strip(day_mode: bool = False):
     st.markdown(
-        '<div class="market-pulse-kicker">MARKET PULSE · DAILY</div>',
+        '<div class="market-bottom-heading">Market Overview · Major Indexes</div>',
         unsafe_allow_html=True,
     )
 
@@ -898,6 +906,73 @@ def load_snapshot(db_text: str, reference: str, timeframe: str) -> pd.DataFrame:
         )
 
 
+def _parse_analyst_date(value):
+    """Parse stored analyst as-of dates, including legacy YYYYMMDD strings."""
+    if value is None:
+        return None
+    raw = str(value).strip()
+    if not raw or raw.lower() in {"nan", "nat", "none", "—", "null"}:
+        return None
+    try:
+        d = pd.to_datetime(raw, format="%Y%m%d" if re.fullmatch(r"\d{8}", raw) else None, errors="coerce")
+        if pd.isna(d):
+            return None
+        dt = pd.Timestamp(d)
+        if dt.year < 2000 or dt > pd.Timestamp.now() + pd.Timedelta(days=1):
+            return None
+        return dt
+    except Exception:
+        return None
+
+
+def _analyst_asof_from_table(db_path: Path):
+    """Return date of actual stored Yahoo analyst records; never the snapshot date."""
+    if not db_path.is_file():
+        return None
+    try:
+        with sqlite3.connect(str(db_path)) as con:
+            exists = con.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='analyst_targets'"
+            ).fetchone()
+            if not exists:
+                return None
+            cols = {r[1].lower() for r in con.execute("PRAGMA table_info(analyst_targets)")}
+            date_col = "asof_date" if "asof_date" in cols else (
+                "fetched_at" if "fetched_at" in cols else None
+            )
+            if date_col is None:
+                return None
+            where = "WHERE LOWER(COALESCE(source,'')) LIKE '%yahoo%'" if "source" in cols else ""
+            values = con.execute(
+                f"SELECT DISTINCT {date_col} FROM analyst_targets {where} "
+                f"ORDER BY {date_col} DESC LIMIT 200"
+            ).fetchall()
+            dates = [d for r in values if (d := _parse_analyst_date(r[0])) is not None]
+            return max(dates) if dates else None
+    except (sqlite3.Error, OSError):
+        return None
+
+
+def _market_pulse_analyst_asof(db: Path, status_row, stock: pd.DataFrame) -> str:
+    """Use real source dates, including Cloud STATUS date stamped at export."""
+    dates = []
+    status_date = _parse_analyst_date(status_row.get("analyst_asof"))
+    if status_date is not None:
+        dates.append(status_date)
+    if "analyst_asof" in stock.columns:
+        for value in stock["analyst_asof"].dropna().unique():
+            parsed = _parse_analyst_date(value)
+            if parsed is not None:
+                dates.append(parsed)
+
+    for path in [db, APP_DIR / "data" / "marketvector_tlt_tbt.sqlite"]:
+        parsed = _analyst_asof_from_table(path)
+        if parsed is not None:
+            dates.append(parsed)
+
+    return max(dates).strftime("%B %d, %Y") if dates else "date unavailable"
+
+
 def _safe_text(v, default="—"):
     if v is None:
         return default
@@ -977,20 +1052,38 @@ def _entry_reversal_date(row, timeframe: str):
     return parsed
 
 
-def _entry_reversal_pattern(row, timeframe: str):
-    primary = "daily_reversal_pattern" if timeframe == "DAILY" else "weekly_reversal_pattern"
-    # Price structure is a valid independent setup; do not label a Buy as
-    # "Awaiting reversal" or show an old bearish candle as the Buy catalyst.
-    if _safe_text(row.get("client_trade_basis"), "") == "DAILY_UPTREND":
-        return ("Higher high + higher low (daily)" if timeframe == "DAILY"
-                else "Daily higher high + higher low (weekly pending)")
-    pattern = _safe_text(row.get(primary), "")
-    if pattern:
-        return pattern
-    actual = row.get("actual_response_date")
-    if actual is not None and not pd.isna(actual):
-        return "Bullish response"
-    return "Awaiting reversal"
+def _trend_status_for_row(row, timeframe: str) -> str:
+    """Price structure from the daily HH/HL overlay, independent of MA filters.
+
+    A Buy from the *separate* reversal path need not have HH/HL yet; don't
+    report a broken trend as its Buy catalyst.  The trade decision remains
+    controlled by the existing snapshot's client_trade_valid flag.
+    """
+    confirmed = _num(row.get("daily_uptrend_confirmed"))
+    hh = _num(row.get("trend_higher_high"))
+    hl = _num(row.get("trend_higher_low"))
+    basis = _safe_text(row.get("client_trade_basis"), "").upper()
+    valid = _num(row.get("client_trade_valid"))
+
+    if pd.notna(confirmed):
+        if int(confirmed) == 1:
+            return "Uptrend intact"
+        if pd.notna(valid) and int(valid) == 1:
+            return "Bullish reversal active"
+        return "Uptrend broken"
+
+    if pd.notna(hh) and pd.notna(hl):
+        if int(hh) == 1 and int(hl) == 1:
+            return "Uptrend intact"
+        if pd.notna(valid) and int(valid) == 1:
+            return "Bullish reversal active"
+        return "Uptrend broken"
+
+    if basis == "DAILY_UPTREND":
+        return "Uptrend intact"
+    if pd.notna(valid) and int(valid) == 1:
+        return "Bullish reversal active"
+    return "Trend not confirmed"
 
 
 def _signal_comment_for_row(row, reference: str, timeframe: str, weekly_valid: bool):
@@ -1271,14 +1364,10 @@ def _passes_minimum_upside(
 
 
 def _client_grid_frame(df, reference, timeframe, weekly_valid):
-    reversal_date_label = f"{timeframe.title()} Reversal Date"
-    reversal_label = f"{timeframe.title()} Reversal"
-
     columns = [
         "Symbol",
         "Sector",
-        reversal_date_label,
-        reversal_label,
+        "Trend Status",
         "Lag vs TLT",
         "Expected In",
         "Expected Turn",
@@ -1288,6 +1377,7 @@ def _client_grid_frame(df, reference, timeframe, weekly_valid):
         "Analyst Rating",
         "Current Price",
         "Analyst Median",
+        "Analyst High Target",
         "_Analyst Low",
         "_Analyst High",
         "_Target Tooltip",
@@ -1305,8 +1395,7 @@ def _client_grid_frame(df, reference, timeframe, weekly_valid):
             {
                 "Symbol": symbol,
                 "Sector": _sector_description(row.get("etf")),
-                reversal_date_label: _entry_reversal_date(row, timeframe),
-                reversal_label: _entry_reversal_pattern(row, timeframe),
+                "Trend Status": _trend_status_for_row(row, timeframe),
                 "Lag vs TLT": _tlt_lag_display(row, timeframe),
                 "Expected In": _forecast_in_display(row),
                 "Expected Turn": _forecast_turn_date(row),
@@ -1318,10 +1407,12 @@ def _client_grid_frame(df, reference, timeframe, weekly_valid):
                 "Analyst Rating": _safe_text(row.get("analyst_rating")),
                 "Current Price": _current_price_value(row),
                 "Analyst Median": _median_value(row),
+                "Analyst High Target": _num(row.get("target_12m_high")),
                 "_Analyst Low": _num(row.get("target_12m_low")),
                 "_Analyst High": _num(row.get("target_12m_high")),
                 "_Target Tooltip": (
                     f"Analyst Low: ${_num(row.get('target_12m_low')):,.2f} | "
+                    f"Analyst Median: ${_median_value(row):,.2f} | "
                     f"Analyst High: ${_num(row.get('target_12m_high')):,.2f}"
                     if pd.notna(_num(row.get("target_12m_low")))
                     and pd.notna(_num(row.get("target_12m_high")))
@@ -1341,14 +1432,6 @@ def _client_grid_frame(df, reference, timeframe, weekly_valid):
         )
 
     out = pd.DataFrame(rows)
-
-    # Normalize missing reversal dates to Python None.  This prevents pandas
-    # NaT from serializing into a truthy "NaT" value in AG Grid.
-    reversal_date_col = f"{timeframe.title()} Reversal Date"
-    if reversal_date_col in out.columns:
-        out[reversal_date_col] = out[reversal_date_col].map(
-            lambda v: None if v is None or pd.isna(v) else v
-        )
 
     out.index = range(1, len(out) + 1)
     out.index.name = "#"
@@ -1416,60 +1499,53 @@ def _row_quality_bucket(row):
 
 
 def _style_grid(frame):
+    """Native fallback mirrors the conditional colors in the AG Grid view."""
     if frame.empty:
         return frame
 
     def row_style(row):
-        bucket = _row_quality_bucket(row)
-        styles = {
-            "VERY_FAVORABLE": "background-color: rgba(22,163,74,.13);",
-            "FAVORABLE": "background-color: rgba(59,130,246,.085);",
-            "MIXED": "background-color: rgba(234,179,8,.095);",
-            "CAUTION": "background-color: rgba(220,38,38,.075);",
-        }
-        return [styles[bucket]] * len(row)
+        signal = str(row.get("Signal", "")).strip().upper()
+        if signal == "BUY":
+            return ["background-color:#eefbf3; color:#14532d;"] * len(row)
+        if signal == "HOLD":
+            return ["background-color:#fff1f2; color:#7f1d1d;"] * len(row)
+        return [""] * len(row)
 
-    def comment_style(v):
-        text = str(v or "").strip().lower()
-        if text.startswith("hold:"):
-            return "background-color: rgba(245,158,11,.20); font-weight:700;"
-        if text.startswith("intact:"):
-            return "background-color: rgba(22,163,74,.09); font-weight:650;"
-        if text.startswith("waiting:"):
-            return "background-color: rgba(59,130,246,.08); font-weight:600;"
+    def signal_style(value):
+        signal = str(value or "").strip().upper()
+        if signal == "BUY":
+            return "background-color:#bbf7d0; color:#166534; font-weight:800;"
+        if signal == "HOLD":
+            return "background-color:#fecdd3; color:#991b1b; font-weight:800;"
         return ""
 
-    def conf_style(v):
-        if v == "Strong":
-            return "font-weight:800;"
-        if v == "Good":
-            return "font-weight:700;"
-        return ""
-
-    def rating_style(v):
-        rating = str(v).strip().upper()
-        if rating in {"STRONG BUY", "BUY", "OUTPERFORM", "OVERWEIGHT"}:
-            return "font-weight:800;"
-        if rating in {"SELL", "STRONG SELL", "UNDERPERFORM", "UNDERWEIGHT"}:
-            return "font-weight:700;"
-        return ""
-
-    def upside_style(v):
+    def upside_style(value):
         try:
-            value = float(v)
-        except Exception:
+            value = float(value)
+        except (TypeError, ValueError):
             return ""
-        if value >= 20:
-            return "font-weight:800;"
-        if value >= 10:
-            return "font-weight:700;"
-        return ""
+        if value >= 50:
+            return "background-color:#bbf7d0; color:#14532d; font-weight:800;"
+        if value >= 35:
+            return "background-color:#dcfce7; color:#166534; font-weight:750;"
+        if value >= 25:
+            return "background-color:#fef3c7; color:#92400e; font-weight:750;"
+        return "background-color:#fee2e2; color:#991b1b; font-weight:750;"
+
+    def confidence_style(value):
+        v = str(value or "").strip().upper()
+        return "font-weight:800;" if v == "STRONG" else (
+            "font-weight:700;" if v == "GOOD" else ""
+        )
 
     styler = frame.style.apply(row_style, axis=1)
-    styler = styler.map(comment_style, subset=["Signal Comment"])
-    styler = styler.map(conf_style, subset=["Confidence"])
-    styler = styler.map(rating_style, subset=["Analyst Rating"])
-    styler = styler.map(upside_style, subset=["Upside Potential"])
+    for col, fn in (
+        ("Signal", signal_style),
+        ("Upside Potential", upside_style),
+        ("Confidence", confidence_style),
+    ):
+        if col in frame.columns:
+            styler = styler.map(fn, subset=[col])
     return styler
 
 
@@ -1496,6 +1572,11 @@ def _render_aggrid(
         }
     )
 
+    # Compute row quality using hidden underlying analyst upside, then remove
+    # all excluded fields before GridOptionsBuilder (no floating filters).
+    grid["_Quality"] = grid.apply(_aggrid_row_quality, axis=1)
+    grid = grid.drop(columns=list(MP_REMOVED_GRID_COLUMNS), errors="ignore")
+
     if "Chart" in grid.columns:
         grid["Chart"] = (
             grid["Chart"]
@@ -1507,11 +1588,6 @@ def _render_aggrid(
                 regex=True,
             )
         )
-
-    grid["_Quality"] = grid.apply(
-        _aggrid_row_quality,
-        axis=1,
-    )
 
     # Custom dropdown component embedded in AG Grid's floating-filter row.
     dropdown_filter = JsCode("""
@@ -1585,32 +1661,42 @@ def _render_aggrid(
         if column not in grid.columns:
             return
 
-        display_values = [
-            _filter_display_value(
-                column,
-                value,
-            )
-            for value in grid[column].tolist()
-        ]
-
-        # Store the display/filter label in a hidden companion field so AG
-        # Grid's text filter can match exact dropdown values reliably.
-        filter_field = f"__filter__{column}"
-
-        grid[filter_field] = display_values
-
-        # Build a one-column temporary frame from the hidden display/filter
-        # field.  Do NOT rename it inside the full grid because that creates
-        # duplicate column names when the real column already exists.
+        # Build dropdown values straight from the VISIBLE field. Previous
+        # versions added __filter__ helper fields after GridOptionsBuilder
+        # initialized its column definitions, which could leave misaligned
+        # phantom header/filter columns on some AG Grid versions.
         filter_values = _in_grid_filter_values(
-            pd.DataFrame(
-                {
-                    column: grid[
-                        filter_field
-                    ]
-                }
-            ),
-            column,
+            pd.DataFrame({column: grid[column]}), column,
+        )
+
+        # Format the filter's comparison text exactly like the options shown
+        # by the custom dropdown. No companion data columns are required.
+        # This retains exact-match filtering for price, target and upside.
+        filter_getter = JsCode(
+            f"""function(params) {{
+                const column = {json.dumps(column)};
+                const value = params.data ? params.data[column] : null;
+                if (value === null || value === undefined || value === '') return '';
+                if (column === 'Current Price' || column === 'Analyst High Target' || column === 'Analyst Median') {{
+                    const n = Number(value);
+                    return Number.isFinite(n)
+                        ? '$' + n.toLocaleString('en-US', {{ minimumFractionDigits:2, maximumFractionDigits:2 }})
+                        : '';
+                }}
+                if (column === 'Upside Potential') {{
+                    const n = Number(value);
+                    return Number.isFinite(n) ? n.toFixed(1) + '%' : '';
+                }}
+                if (column === 'Chart') return value ? 'View Chart' : '';
+                if (column === 'Expected Turn') {{
+                    const d = new Date(value);
+                    return Number.isNaN(d.getTime())
+                        ? ''
+                        : d.toLocaleDateString('en-US', {{month:'short',day:'2-digit',year:'numeric',timeZone:'UTC'}});
+                }}
+                const valueText = String(value).trim();
+                return ['', '—', 'None', 'NaT', 'nan'].includes(valueText) ? '' : valueText;
+            }}"""
         )
 
         kwargs = {
@@ -1619,16 +1705,13 @@ def _render_aggrid(
             "filter": "agTextColumnFilter",
             "floatingFilter": True,
             "floatingFilterComponent": dropdown_filter,
+            # Official AG Grid column property: suppresses the blue popover
+            # button in the floating-filter row, not our custom dropdown.
+            "suppressFloatingFilterButton": True,
             "floatingFilterComponentParams": {
                 "values": filter_values,
             },
-            "filterValueGetter": JsCode(
-                f"""function(params) {{
-                    return params.data
-                        ? (params.data[{json.dumps(filter_field)}] || '')
-                        : '';
-                }}"""
-            ),
+            "filterValueGetter": filter_getter,
             "suppressMenu": True,
             "suppressHeaderMenuButton": True,
             "menuTabs": [],
@@ -1660,10 +1743,6 @@ def _render_aggrid(
             **kwargs,
         )
 
-        gb.configure_column(
-            filter_field,
-            hide=True,
-        )
 
     gb = GridOptionsBuilder.from_dataframe(
         grid
@@ -1683,10 +1762,8 @@ def _render_aggrid(
         headerHeight=26,
         floatingFiltersHeight=24,
         rowHeight=26,
+        suppressHorizontalScroll=False,
     )
-
-    reversal_date_col = f"{timeframe.title()} Reversal Date"
-    reversal_col = f"{timeframe.title()} Reversal"
 
     gb.configure_column(
         "#",
@@ -1719,25 +1796,9 @@ def _render_aggrid(
 
     configure_dropdown_filter(
         gb,
-        reversal_date_col,
-        header_name="Reversal Date",
-        width=110,
-        min_width=98,
-        value_formatter=(
-            "value == null || value === '' || value === 'NaT' || value === 'None' "
-            "? '' "
-            ": (isNaN(new Date(value).getTime()) "
-            "? '' "
-            ": new Date(value).toLocaleDateString('en-US',"
-            "{month:'short',day:'2-digit',year:'numeric'}))"
-        ),
-    )
-
-    configure_dropdown_filter(
-        gb,
-        reversal_col,
-        width=130,
-        min_width=110,
+        "Trend Status",
+        width=175,
+        min_width=145,
     )
 
     show_tlt_timing = (
@@ -1812,16 +1873,16 @@ def _render_aggrid(
         gb,
         "Analyst Rating",
         header_name="Analyst Rating",
-        width=112,
-        min_width=102,
+        width=130,
+        min_width=120,
     )
 
     configure_dropdown_filter(
         gb,
         "Current Price",
-        header_name="Price",
-        width=88,
-        min_width=80,
+        header_name="Current Price",
+        width=110,
+        min_width=102,
         value_formatter=(
             "value == null || isNaN(value) "
             "? '' "
@@ -1831,10 +1892,10 @@ def _render_aggrid(
 
     configure_dropdown_filter(
         gb,
-        "Analyst Median",
-        header_name="Median Target",
-        width=105,
-        min_width=96,
+        "Analyst High Target",
+        header_name="Analyst High Target",
+        width=170,
+        min_width=158,
         tooltip_field="_Target Tooltip",
         value_formatter=(
             "value == null || isNaN(value) "
@@ -1842,16 +1903,17 @@ def _render_aggrid(
             ": '$' + Number(value).toFixed(2)"
         ),
         header_tooltip=(
-            "Hover a Median Target cell to see analyst Low and High targets"
+            "Highest Yahoo analyst price target (not the median). "
+            "Hover for the low / median / high range."
         ),
     )
 
     configure_dropdown_filter(
         gb,
         "Upside Potential",
-        header_name="Upside",
-        width=85,
-        min_width=78,
+        header_name="Upside Potential",
+        width=118,
+        min_width=108,
         value_formatter=(
             "value == null || isNaN(value) "
             "? '' "
@@ -1859,47 +1921,37 @@ def _render_aggrid(
         ),
     )
 
+
+    # Chart is a real clickable link, just as before the v1.3 column cleanup.
     chart_click = JsCode("""function(params) {
-        if (!params.value) {
-            return;
-        }
-
-        window.open(
-            String(params.value),
-            '_blank',
-            'noopener,noreferrer'
-        );
+        if (!params.value) return;
+        window.open(String(params.value), '_blank', 'noopener,noreferrer');
     }""")
-
     chart_style = JsCode("""function(params) {
-        if (!params.value) {
-            return null;
-        }
-
-        return {
-            color: '#1155cc',
-            fontWeight: '600',
-            cursor: 'pointer',
-            textDecoration: 'underline'
-        };
+        if (!params.value) return null;
+        return { color:'#1155cc', fontWeight:'600', cursor:'pointer',
+                 textDecoration:'underline' };
     }""")
 
     configure_dropdown_filter(
         gb,
         "Chart",
         header_name="Chart",
-        width=92,
-        min_width=84,
+        width=112,
+        min_width=100,
         value_formatter="value ? 'View Chart' : ''",
         sortable=False,
     )
+    gb.configure_column("Chart", onCellClicked=chart_click, cellStyle=chart_style)
 
-    # Reapply chart click/style after generic filter config.
-    gb.configure_column(
-        "Chart",
-        onCellClicked=chart_click,
-        cellStyle=chart_style,
-    )
+    # Financial columns: right-aligned values and stable column widths.
+    for numeric_col in ("Current Price", "Analyst High Target", "Upside Potential"):
+        gb.configure_column(
+            numeric_col,
+            cellStyle={"textAlign": "right"},
+            headerClass="mp-numeric-header",
+            suppressSizeToFit=True,
+        )
 
     for hidden in [
         "_Analyst Low",
@@ -1945,18 +1997,12 @@ def _render_aggrid(
     )
 
     signal_style = JsCode("""function(params) {
-        const t = String(params.value || '').toUpperCase();
-        if (t === 'BUY') {
-            return {
-                fontWeight:'800',
-                color:'#15803d'
-            };
+        const signal = String(params.value || '').trim().toUpperCase();
+        if (signal === 'BUY') {
+            return { backgroundColor:'#bbf7d0', color:'#166534', fontWeight:'800' };
         }
-        if (t === 'HOLD') {
-            return {
-                fontWeight:'700',
-                color:'#a16207'
-            };
+        if (signal === 'HOLD') {
+            return { backgroundColor:'#fecdd3', color:'#991b1b', fontWeight:'800' };
         }
         return null;
     }""")
@@ -1965,6 +2011,33 @@ def _render_aggrid(
         "Signal",
         cellStyle=signal_style,
     )
+
+    # Tiered upside visual.  This field is still calculated using the
+    # existing analyst HIGH target / current price, unchanged from v1.5.
+    upside_cell_style = JsCode("""function(params) {
+        if (params.value === null || params.value === undefined || params.value === '') {
+            return { textAlign:'right' };
+        }
+        const n = Number(params.value);
+        if (!Number.isFinite(n)) return { textAlign:'right' };
+        if (n >= 50) return {
+            backgroundColor:'#bbf7d0', color:'#14532d',
+            fontWeight:'800', textAlign:'right'
+        };
+        if (n >= 35) return {
+            backgroundColor:'#dcfce7', color:'#166534',
+            fontWeight:'800', textAlign:'right'
+        };
+        if (n >= 25) return {
+            backgroundColor:'#fef3c7', color:'#92400e',
+            fontWeight:'800', textAlign:'right'
+        };
+        return {
+            backgroundColor:'#fee2e2', color:'#991b1b',
+            fontWeight:'800', textAlign:'right'
+        };
+    }""")
+    gb.configure_column("Upside Potential", cellStyle=upside_cell_style)
 
     confidence_style = JsCode("""function(params) {
         const t = String(params.value || '').toUpperCase();
@@ -1982,24 +2055,70 @@ def _render_aggrid(
         cellStyle=confidence_style,
     )
 
-    upside_style = JsCode("""function(params) {
-        const v = Number(params.value);
-        if (!isFinite(v)) {
-            return null;
-        }
-        if (v >= 50) {
-            return {fontWeight:'800'};
-        }
-        if (v >= 25) {
-            return {fontWeight:'700'};
-        }
-        return null;
-    }""")
+    # Make the visible columns explicit.  This also fixes a v1.4 alignment
+    # artifact where helper/hidden fields could produce blank floating filters.
+    visible_order = [
+        "#", "Symbol", "Sector", "Trend Status", "Lag vs TLT",
+        "Expected In", "Expected Turn", "Signal", "Confidence",
+        "Analyst Rating", "Current Price", "Analyst High Target",
+        "Upside Potential", "Chart",
+    ]
+    if reference.upper() != "TLT":
+        visible_order = [c for c in visible_order if c not in
+                         {"Lag vs TLT", "Expected In", "Expected Turn"}]
+    elif not key.endswith("_hold"):
+        visible_order = [c for c in visible_order if c not in
+                         {"Expected In", "Expected Turn"}]
+    options = gb.build()
+    coldefs = options.get("columnDefs", [])
+    defs_by_field = {c.get("field"): c for c in coldefs if c.get("field")}
+    # No trailing unnamed or implicit columns; include only visible fields
+    # followed by explicitly hidden data used for styling/tooltips.
+    hidden_order = [
+        "Signal Comment", "_Analyst Low", "_Analyst High",
+        "_Target Tooltip", "_Quality", "Analyst Median",
+    ]
+    options["columnDefs"] = [
+        defs_by_field[c] for c in visible_order
+        if c in defs_by_field
+    ] + [
+        {**defs_by_field[c], "hide": True} for c in hidden_order
+        if c in defs_by_field
+    ]
 
-    gb.configure_column(
-        "Upside Potential",
-        cellStyle=upside_style,
-    )
+    # Apply Buy/Hold color to the full row. No selection/filter/logic changes.
+    options["rowClassRules"] = {
+        "mp-buy-row": JsCode("""function(params) {
+            return params.data && String(params.data['Signal'] || '').trim().toUpperCase() === 'BUY';
+        }"""),
+        "mp-hold-row": JsCode("""function(params) {
+            return params.data && String(params.data['Signal'] || '').trim().toUpperCase() === 'HOLD';
+        }"""),
+    }
+
+    # Styling must be delivered to the AG Grid component itself. Keep the
+    # Signal and Upside Potential cells free for their stronger tier colors.
+    market_pulse_grid_css = {
+        ".ag-row.mp-buy-row .ag-cell:not([col-id='Signal']):not([col-id='Upside Potential'])": {
+            "background-color": "#eefbf3 !important",
+        },
+        ".ag-row.mp-hold-row .ag-cell:not([col-id='Signal']):not([col-id='Upside Potential'])": {
+            "background-color": "#fff1f2 !important",
+        },
+        ".ag-row.mp-buy-row .ag-cell[col-id='Signal']": {
+            "background-color": "#bbf7d0 !important",
+            "color": "#166534 !important",
+            "font-weight": "800 !important",
+        },
+        ".ag-row.mp-hold-row .ag-cell[col-id='Signal']": {
+            "background-color": "#fecdd3 !important",
+            "color": "#991b1b !important",
+            "font-weight": "800 !important",
+        },
+        ".ag-row .ag-cell[col-id='Upside Potential']": {
+            "font-weight": "800 !important",
+        },
+    }
 
     st.markdown(
         '<div class="excel-grid-wrap">',
@@ -2008,11 +2127,12 @@ def _render_aggrid(
 
     AgGrid(
         grid,
-        gridOptions=gb.build(),
+        gridOptions=options,
+        custom_css=market_pulse_grid_css,
         height=grid_height,
         width="100%",
         theme="balham",
-        fit_columns_on_grid_load=True,
+        fit_columns_on_grid_load=False,
         allow_unsafe_jscode=True,
         enable_enterprise_modules=False,
         update_on=[],
@@ -2026,32 +2146,20 @@ def _render_aggrid(
 
 
 def _render_native_grid_fallback(frame: pd.DataFrame, reference: str, timeframe: str, grid_height: int, key: str):
-    """Fallback used only when streamlit-aggrid is not installed."""
+    """Streamlit-native fallback: same visible columns as the AG Grid version."""
     display = frame.drop(
-        columns=["_Analyst Low", "_Analyst High", "_Target Tooltip"],
+        columns=list(MP_REMOVED_GRID_COLUMNS) + [
+            "_Analyst Low", "_Analyst High", "_Target Tooltip", "Signal Comment"
+        ],
         errors="ignore",
     )
-
     if reference.upper() != "TLT":
         display = display.drop(
-            columns=[
-                "Lag vs TLT",
-                "Expected In",
-                "Expected Turn",
-            ],
+            columns=["Lag vs TLT", "Expected In", "Expected Turn"],
             errors="ignore",
         )
     elif not key.endswith("_hold"):
-        display = display.drop(
-            columns=[
-                "Expected In",
-                "Expected Turn",
-            ],
-            errors="ignore",
-        )
-    reversal_date_col = f"{timeframe.title()} Reversal Date"
-    reversal_col = f"{timeframe.title()} Reversal"
-    ma_title = "Vs 200DMA" if timeframe == "DAILY" else "Vs 200WMA"
+        display = display.drop(columns=["Expected In", "Expected Turn"], errors="ignore")
 
     st.dataframe(
         _style_grid(display),
@@ -2060,33 +2168,29 @@ def _render_native_grid_fallback(frame: pd.DataFrame, reference: str, timeframe:
         hide_index=False,
         column_config={
             "Symbol": st.column_config.TextColumn("Symbol", width="small"),
-            "Sector": st.column_config.TextColumn("Sector", width="small"),
-            reversal_date_col: st.column_config.DateColumn("Reversal Date", format="MMM DD, YYYY", width="small"),
-            reversal_col: st.column_config.TextColumn(reversal_col, width="small"),
+            "Sector": st.column_config.TextColumn("Sector", width="medium"),
+            "Trend Status": st.column_config.TextColumn("Trend Status", width="medium"),
             "Lag vs TLT": st.column_config.TextColumn("Lag vs TLT", width="small"),
             "Expected In": st.column_config.TextColumn("Expected In", width="small"),
-            "Expected Turn": st.column_config.DateColumn(
-                "Expected Turn",
-                format="MMM DD, YYYY",
-                width="small",
-            ),
+            "Expected Turn": st.column_config.DateColumn("Expected Turn", format="MMM DD, YYYY", width="small"),
             "Signal": st.column_config.TextColumn("Signal", width="small"),
-            "Signal Comment": st.column_config.TextColumn("Signal Comment", width="medium"),
             "Confidence": st.column_config.TextColumn("Confidence", width="small"),
             "Analyst Rating": st.column_config.TextColumn("Analyst Rating", width="small"),
-            "Current Price": st.column_config.NumberColumn("Price", format="$%.2f", width="small"),
-            "Analyst Median": st.column_config.NumberColumn(
-                "Median Target",
-                format="$%.2f",
-                width="small",
-                help="Install streamlit-aggrid to hover and see analyst Low / High targets.",
+            "Current Price": st.column_config.NumberColumn(
+                "Current Price", format="$%.2f", width="small"
             ),
-            "Upside Potential": st.column_config.NumberColumn("Upside", format="%.1f%%", width="small"),
-            "Chart": st.column_config.LinkColumn("Chart", display_text="View Chart", width="small"),
+            "Analyst High Target": st.column_config.NumberColumn(
+                "Analyst High Target", format="$%.2f", width="small"
+            ),
+            "Upside Potential": st.column_config.NumberColumn(
+                "Upside", format="%.1f%%", width="small"
+            ),
+            "Chart": st.column_config.LinkColumn(
+                "Chart", display_text="View Chart", width="small"
+            ),
         },
         key=f"grid_{key}",
     )
-
 
 
 def _apply_grid_quick_search(
@@ -2142,10 +2246,8 @@ def _grid_export_frame(
 ) -> pd.DataFrame:
     """Build the clean client-facing export view."""
     export = frame.drop(
-        columns=[
-            "_Analyst Low",
-            "_Analyst High",
-            "_Target Tooltip",
+        columns=list(MP_REMOVED_GRID_COLUMNS) + [
+            "_Analyst Low", "_Analyst High", "_Target Tooltip", "Signal Comment"
         ],
         errors="ignore",
     ).copy()
@@ -2168,20 +2270,6 @@ def _grid_export_frame(
             errors="ignore",
         )
 
-    reversal_date_col = f"{timeframe.title()} Reversal Date"
-
-    if reversal_date_col in export.columns:
-        parsed = pd.to_datetime(
-            export[reversal_date_col],
-            errors="coerce",
-        )
-        export[reversal_date_col] = parsed.dt.strftime(
-            "%Y-%m-%d"
-        ).where(
-            parsed.notna(),
-            "",
-        )
-
     if "Expected Turn" in export.columns:
         parsed_expected = pd.to_datetime(
             export["Expected Turn"],
@@ -2194,10 +2282,12 @@ def _grid_export_frame(
             "",
         )
 
+    # Excel gets a clickable 'View Chart' cell and a hidden Chart URL
+    # helper column. CSV retains both the label and the actual URL.
     if "Chart" in export.columns:
         export["Chart URL"] = export["Chart"].fillna("")
         export["Chart"] = export["Chart URL"].map(
-            lambda x: "View Chart" if str(x).strip() else ""
+            lambda url: "View Chart" if str(url).strip() else ""
         )
 
     export.index = range(
@@ -2340,6 +2430,7 @@ def _filter_display_value(
     if column in {
         "Current Price",
         "Analyst Median",
+        "Analyst High Target",
     }:
         n = pd.to_numeric(
             pd.Series(
@@ -2429,6 +2520,7 @@ def _in_grid_filter_values(
     if column in {
         "Current Price",
         "Analyst Median",
+        "Analyst High Target",
         "Upside Potential",
     }:
         def numeric_key(value):
@@ -2640,11 +2732,6 @@ def _render_grid(
             key,
         )
     else:
-        st.warning(
-            "Median-target Low/High hover requires `streamlit-aggrid`. "
-            "Run `python -m pip install streamlit-aggrid` once, then restart the dashboard.",
-            icon="⚠️",
-        )
         _render_native_grid_fallback(
             frame,
             reference,
@@ -2713,22 +2800,13 @@ def render_market_pulse_dashboard():
         page_title="Market Pulse · TLT/TBT Signal Intelligence",
         page_icon="📈",
         layout="wide",
+        initial_sidebar_state="expanded",
     )
 
     st.sidebar.markdown("## Market Pulse")
 
-    day_mode = st.sidebar.toggle(
-        "☀️ Day mode",
-        value=False,
-        key="market_pulse_day_mode",
-        help="Off = Night mode · On = Day mode",
-    )
-
-    mode_label = "DAY" if day_mode else "NIGHT"
-
-    st.sidebar.caption(
-        f"Display: {mode_label}"
-    )
+    # Fixed light theme. Sidebar remains expanded initially and can be collapsed manually.
+    day_mode = True
 
     reference = st.sidebar.radio(
         "Reference",
@@ -2979,6 +3057,16 @@ def render_market_pulse_dashboard():
             color:#111827 !important;
         }
 
+        /* Price/target/upside labels and values align inside the same column. */
+        .excel-grid-wrap .mp-numeric-header .ag-header-cell-label {
+            justify-content:flex-end !important;
+        }
+        .excel-grid-wrap .ag-header-cell-text {
+            overflow:hidden;
+            text-overflow:ellipsis;
+            white-space:nowrap;
+        }
+
         .excel-grid-wrap .ag-floating-filter {
             background:#ffffff !important;
             border-right:1px solid #d1d5db !important;
@@ -2988,6 +3076,17 @@ def render_market_pulse_dashboard():
 
         .excel-grid-wrap .ag-floating-filter-body {
             width:100% !important;
+        }
+
+        /* Only the custom dropdown is shown; hide the redundant native
+           blue AG Grid filter-menu button (including on filtered columns). */
+        .excel-grid-wrap .ag-floating-filter-button,
+        .excel-grid-wrap .ag-floating-filter-button-button,
+        .excel-grid-wrap .ag-floating-filter-button .ag-icon,
+        .excel-grid-wrap .ag-floating-filter-button-button .ag-icon {
+            display:none !important;
+            width:0 !important;
+            min-width:0 !important;
         }
 
         .excel-grid-wrap .mv-grid-filter-select {
@@ -3096,7 +3195,49 @@ def render_market_pulse_dashboard():
             color:#9ba6b5;
             opacity:1 !important;
         }
-        .block-container {padding-top:1.10rem; padding-bottom:2rem; max-width:1540px;}
+        /* v1.2 layout: show the title completely above every data grid. */
+        .block-container {
+            padding-top:2.65rem !important;
+            padding-bottom:2.5rem !important;
+            max-width:1540px;
+        }
+        .market-pulse-page-heading {
+            display:block;
+            width:100%;
+            text-align:center;
+            font-size:clamp(1.65rem, 2.5vw, 2.45rem);
+            font-weight:800;
+            line-height:1.30;
+            letter-spacing:-.025em;
+            color:#111827 !important;
+            padding:.40rem .3rem .18rem;
+            margin:.25rem auto .22rem;
+            overflow:visible;
+        }
+        .market-pulse-asof-centered {
+            width:100%;
+            text-align:center !important;
+            font-size:.83rem !important;
+            font-weight:520;
+            color:#64748b !important;
+            margin:.1rem auto .85rem !important;
+            opacity:1 !important;
+        }
+        .market-bottom-heading {
+            color:#111827 !important;
+            text-align:center;
+            font-weight:760;
+            font-size:1.18rem;
+            margin:2rem 0 .75rem;
+            border-top:1px solid #dbe2ea;
+            padding-top:1.15rem;
+        }
+        .bulletin {min-height:92px;}
+        .bulletin-title,.bulletin-label,.bulletin-copy {
+            text-align:center;
+        }
+
+        /* Layout governed by .block-container above. */
         .client-kicker {font-size:.84rem; text-transform:uppercase; letter-spacing:.12em; font-weight:700; opacity:.62; margin-bottom:.35rem;}
         .client-title {font-size:2.02rem; line-height:1.08; font-weight:790; letter-spacing:-.035em; margin-bottom:.34rem;}
         .client-subtitle {font-size:.94rem; opacity:.70; max-width:760px; line-height:1.45; margin-bottom:.45rem;}
@@ -3164,6 +3305,191 @@ def render_market_pulse_dashboard():
         unsafe_allow_html=True,
     )
 
+    st.markdown(
+        """
+        <style>
+        /* ============================
+           DAY MODE OVERRIDES
+           ============================ */
+        .stApp {
+            background:#f5f7fa !important;
+            color:#1f2937 !important;
+        }
+
+        [data-testid="stHeader"] {
+            background:rgba(245,247,250,.97) !important;
+        }
+
+        [data-testid="stSidebar"] {
+            background:#ffffff !important;
+            border-right:1px solid #cbd5e1 !important;
+        }
+
+        [data-testid="stSidebar"] *,
+        [data-testid="stSidebar"] label,
+        [data-testid="stSidebar"] .stMarkdown,
+        [data-testid="stSidebar"] p,
+        [data-testid="stSidebar"] div,
+        [data-testid="stSidebar"] h1,
+        [data-testid="stSidebar"] h2,
+        [data-testid="stSidebar"] h3 {
+            color:#1f2937 !important;
+        }
+
+        [data-testid="stSidebar"] [role="radiogroup"] {
+            background:#f1f5f9 !important;
+            border:1px solid #cbd5e1 !important;
+        }
+
+        [data-testid="collapsedControl"] {
+            background:#ffffff !important;
+            border:1px solid #94a3b8 !important;
+            box-shadow:0 4px 14px rgba(15,23,42,.12) !important;
+        }
+
+        [data-testid="collapsedControl"]:hover {
+            background:#e2e8f0 !important;
+            border-color:#64748b !important;
+        }
+
+        [data-testid="collapsedControl"] svg,
+        [data-testid="collapsedControl"] path,
+        [data-testid="collapsedControl"] * {
+            color:#334155 !important;
+            fill:#334155 !important;
+            stroke:#334155 !important;
+        }
+
+        [data-testid="stVerticalBlockBorderWrapper"] {
+            background:#ffffff !important;
+            border-color:#cbd5e1 !important;
+        }
+
+        .market-pulse-kicker {
+            color:#475569 !important;
+        }
+
+        .market-card-title {
+            color:#111827 !important;
+        }
+
+        .market-card-source {
+            color:#64748b !important;
+        }
+
+        .market-card-quote {
+            color:#7c8798 !important;
+        }
+
+        .market-card-last {
+            color:#111827 !important;
+        }
+
+        .market-no-data {
+            color:#64748b !important;
+        }
+
+        .signal-title,
+        .grid-title {
+            color:#111827 !important;
+        }
+
+        .signal-subtitle,
+        .grid-subtitle,
+        .asof-note {
+            color:#64748b !important;
+        }
+
+        .bulletin {
+            background:#ffffff !important;
+            border-color:#cbd5e1 !important;
+        }
+
+        .bulletin-title {
+            color:#111827 !important;
+        }
+
+        .bulletin-copy,
+        .bulletin-label {
+            color:#64748b !important;
+        }
+
+        /* Market Pulse v1.6: status cards are recognizable at a glance.
+           Green = active bullish; red = on hold / unsupported;
+           amber = softened daily conditions under an active weekly thesis. */
+        .bulletin {
+            border-radius:11px !important;
+            box-shadow:0 1px 2px rgba(15,23,42,.06) !important;
+        }
+        .bulletin-valid, .bulletin-constructive {
+            background:#e9f9f0 !important;
+            border:1px solid #86dba4 !important;
+            border-left:6px solid #16a34a !important;
+        }
+        .bulletin-hold, .bulletin-neutral {
+            background:#fff0f1 !important;
+            border:1px solid #f4a3ac !important;
+            border-left:6px solid #dc2626 !important;
+        }
+        .bulletin-soft {
+            background:#fff6df !important;
+            border:1px solid #f2cf84 !important;
+            border-left:6px solid #d97706 !important;
+        }
+        .bulletin-valid .bulletin-title,
+        .bulletin-constructive .bulletin-title {color:#166534 !important;}
+        .bulletin-hold .bulletin-title,
+        .bulletin-neutral .bulletin-title {color:#991b1b !important;}
+        .bulletin-soft .bulletin-title {color:#92400e !important;}
+        .bulletin-valid .bulletin-label,
+        .bulletin-constructive .bulletin-label {color:#15803d !important;opacity:1 !important;}
+        .bulletin-hold .bulletin-label,
+        .bulletin-neutral .bulletin-label {color:#b91c1c !important;opacity:1 !important;}
+        .bulletin-soft .bulletin-label {color:#b45309 !important;opacity:1 !important;}
+        .bulletin-copy {color:#334155 !important;opacity:1 !important;}
+
+        /* Keep Streamlit controls readable in Day mode */
+        [data-baseweb="select"] > div {
+            background:#ffffff !important;
+            border-color:#cbd5e1 !important;
+            color:#111827 !important;
+        }
+
+        [data-baseweb="select"] span,
+        [data-baseweb="select"] input {
+            color:#111827 !important;
+        }
+
+        [role="listbox"],
+        [data-baseweb="menu"] {
+            background:#ffffff !important;
+            color:#111827 !important;
+        }
+
+        /* Excel grid already uses a light sheet style; strengthen border */
+        .excel-grid-wrap {
+            background:#ffffff !important;
+            border-color:#cbd5e1 !important;
+        }
+
+        /* Buttons */
+        button[kind="secondary"],
+        [data-testid="stDownloadButton"] button {
+            background:#ffffff !important;
+            color:#1f2937 !important;
+            border-color:#cbd5e1 !important;
+        }
+
+        button[kind="secondary"]:hover,
+        [data-testid="stDownloadButton"] button:hover {
+            background:#f1f5f9 !important;
+            border-color:#94a3b8 !important;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
     db = resolve_db()
     df = load_snapshot(str(db), reference, timeframe)
 
@@ -3194,172 +3520,10 @@ def render_market_pulse_dashboard():
     asof = pd.to_datetime(s.get("reference_asof"), errors="coerce")
     asof_text = asof.strftime("%B %d, %Y") if pd.notna(asof) else "latest available session"
 
-    if day_mode:
-        st.markdown(
-            """
-            <style>
-            /* ============================
-               DAY MODE OVERRIDES
-               ============================ */
-            .stApp {
-                background:#f5f7fa !important;
-                color:#1f2937 !important;
-            }
-
-            [data-testid="stHeader"] {
-                background:rgba(245,247,250,.97) !important;
-            }
-
-            [data-testid="stSidebar"] {
-                background:#ffffff !important;
-                border-right:1px solid #cbd5e1 !important;
-            }
-
-            [data-testid="stSidebar"] *,
-            [data-testid="stSidebar"] label,
-            [data-testid="stSidebar"] .stMarkdown,
-            [data-testid="stSidebar"] p,
-            [data-testid="stSidebar"] div,
-            [data-testid="stSidebar"] h1,
-            [data-testid="stSidebar"] h2,
-            [data-testid="stSidebar"] h3 {
-                color:#1f2937 !important;
-            }
-
-            [data-testid="stSidebar"] [role="radiogroup"] {
-                background:#f1f5f9 !important;
-                border:1px solid #cbd5e1 !important;
-            }
-
-            [data-testid="collapsedControl"] {
-                background:#ffffff !important;
-                border:1px solid #94a3b8 !important;
-                box-shadow:0 4px 14px rgba(15,23,42,.12) !important;
-            }
-
-            [data-testid="collapsedControl"]:hover {
-                background:#e2e8f0 !important;
-                border-color:#64748b !important;
-            }
-
-            [data-testid="collapsedControl"] svg,
-            [data-testid="collapsedControl"] path,
-            [data-testid="collapsedControl"] * {
-                color:#334155 !important;
-                fill:#334155 !important;
-                stroke:#334155 !important;
-            }
-
-            [data-testid="stVerticalBlockBorderWrapper"] {
-                background:#ffffff !important;
-                border-color:#cbd5e1 !important;
-            }
-
-            .market-pulse-kicker {
-                color:#475569 !important;
-            }
-
-            .market-card-title {
-                color:#111827 !important;
-            }
-
-            .market-card-source {
-                color:#64748b !important;
-            }
-
-            .market-card-quote {
-                color:#7c8798 !important;
-            }
-
-            .market-card-last {
-                color:#111827 !important;
-            }
-
-            .market-no-data {
-                color:#64748b !important;
-            }
-
-            .signal-title,
-            .grid-title {
-                color:#111827 !important;
-            }
-
-            .signal-subtitle,
-            .grid-subtitle,
-            .asof-note {
-                color:#64748b !important;
-            }
-
-            .bulletin {
-                background:#ffffff !important;
-                border-color:#cbd5e1 !important;
-            }
-
-            .bulletin-title {
-                color:#111827 !important;
-            }
-
-            .bulletin-copy,
-            .bulletin-label {
-                color:#64748b !important;
-            }
-
-            /* Keep Streamlit controls readable in Day mode */
-            [data-baseweb="select"] > div {
-                background:#ffffff !important;
-                border-color:#cbd5e1 !important;
-                color:#111827 !important;
-            }
-
-            [data-baseweb="select"] span,
-            [data-baseweb="select"] input {
-                color:#111827 !important;
-            }
-
-            [role="listbox"],
-            [data-baseweb="menu"] {
-                background:#ffffff !important;
-                color:#111827 !important;
-            }
-
-            /* Excel grid already uses a light sheet style; strengthen border */
-            .excel-grid-wrap {
-                background:#ffffff !important;
-                border-color:#cbd5e1 !important;
-            }
-
-            /* Buttons */
-            button[kind="secondary"],
-            [data-testid="stDownloadButton"] button {
-                background:#ffffff !important;
-                color:#1f2937 !important;
-                border-color:#cbd5e1 !important;
-            }
-
-            button[kind="secondary"]:hover,
-            [data-testid="stDownloadButton"] button:hover {
-                background:#f1f5f9 !important;
-                border-color:#94a3b8 !important;
-            }
-            </style>
-            """,
-            unsafe_allow_html=True,
-        )
-
-    else:
-        st.markdown(
-            """
-            <style>
-            /* Night-mode explicit reinforcement */
-            .stApp {
-                background:#081019 !important;
-            }
-            </style>
-            """,
-            unsafe_allow_html=True,
-        )
-
-    _render_market_index_strip(day_mode=day_mode)
+    st.markdown(
+        f'<h1 class="market-pulse-page-heading">Market Pulse · {timeframe.title()}</h1>',
+        unsafe_allow_html=True,
+    )
 
     st.markdown(
         f"""
@@ -3399,28 +3563,21 @@ def render_market_pulse_dashboard():
         "neutral": "bulletin-neutral",
     }[tone_key]
 
-    controls_col, weekly_col, setup_col = st.columns(
-        [1.35, 1.0, 1.0],
+    analyst_asof_text = _market_pulse_analyst_asof(db, s, stock)
+    st.markdown(
+        f"<div class='asof-note market-pulse-asof-centered'>"
+        f"Market data through {html.escape(asof_text)} · "
+        f"Analyst data through {html.escape(analyst_asof_text)}"
+        f"</div>",
+        unsafe_allow_html=True,
+    )
+
+    # Outer spacer columns keep the two bulletin cards centered as a pair.
+    _, weekly_col, setup_col, _ = st.columns(
+        [0.65, 2.0, 2.0, 0.65],
         gap="medium",
         vertical_alignment="top",
     )
-
-    with controls_col:
-        st.markdown(
-            "<div class='header-controls'>",
-            unsafe_allow_html=True,
-        )
-
-        st.markdown(
-            f"<div class='asof-note'>Market data through {html.escape(asof_text)} · "
-            f"Analyst data through {html.escape(_safe_text(s.get('analyst_asof')))}</div>",
-            unsafe_allow_html=True,
-        )
-
-        st.markdown(
-            "</div>",
-            unsafe_allow_html=True,
-        )
 
     # Client dashboards intentionally show only the two primary sections:
     # Actionable Now and Follower List — On Hold.
@@ -3584,6 +3741,10 @@ def render_market_pulse_dashboard():
                 filter_state,
                 key=f"{reference}_{timeframe}_{section_key}",
             )
+
+    # Market overview comes AFTER both actionable and on-hold stock grids.
+    _render_market_index_strip(day_mode=True)
+
 
 # Allow Streamlit Community Cloud to launch this module directly.
 # The normal wrapper entrypoint (app_market_pulse.py) still works because

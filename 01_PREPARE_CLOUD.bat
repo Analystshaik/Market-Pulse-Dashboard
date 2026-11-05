@@ -29,6 +29,12 @@ if errorlevel 1 (
     exit /b 1
 )
 
+python STAMP_MARKET_PULSE_ANALYST_DATE.py
+if errorlevel 1 (
+    echo ERROR: Failed to stamp Market Pulse analyst-data date.
+    exit /b 1
+)
+
 python validate_cloud_package.py
 if errorlevel 1 ( echo CLOUD PACKAGE VALIDATION FAILED. & exit /b 1 )
 echo.
