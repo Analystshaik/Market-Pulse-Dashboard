@@ -1059,6 +1059,27 @@ def _trend_status_for_row(row, timeframe: str) -> str:
     report a broken trend as its Buy catalyst.  The trade decision remains
     controlled by the existing snapshot's client_trade_valid flag.
     """
+    if str(timeframe).upper() == "WEEKLY":
+        weekly_dir = str(row.get("weekly_trend_direction") or "").upper()
+        provisional = _num(row.get("weekly_trend_provisional"))
+        wb = _num(row.get("client_weekly_bearish_block"))
+        wd = _num(row.get("client_weekly_downtrend_block"))
+        if pd.notna(wb) and int(wb) == 1:
+            return "Weekly bearish reversal"
+        if pd.notna(wd) and int(wd) == 1:
+            return "Weekly downtrend"
+        if weekly_dir == "BULLISH":
+            return "Weekly uptrend (forming)" if pd.notna(provisional) and int(provisional) else "Weekly uptrend intact"
+        if weekly_dir == "BEARISH":
+            return "Weekly downtrend"
+        return "Weekly trend unconfirmed"
+
+    dc = _num(row.get("client_daily_candlestick_block"))
+    dd = _num(row.get("client_daily_downtrend_block"))
+    if pd.notna(dc) and int(dc) == 1:
+        return "Daily bearish reversal"
+    if pd.notna(dd) and int(dd) == 1:
+        return "Uptrend broken"
     confirmed = _num(row.get("daily_uptrend_confirmed"))
     hh = _num(row.get("trend_higher_high"))
     hl = _num(row.get("trend_higher_low"))
@@ -1363,11 +1384,29 @@ def _passes_minimum_upside(
 
 
 
+
+
+def _rsi_pair_for_row(row):
+    daily = _num(row.get("daily_rsi14"))
+    weekly = _num(row.get("weekly_rsi14"))
+    d = f"{float(daily):.0f}" if pd.notna(daily) else "—"
+    w = f"{float(weekly):.0f}" if pd.notna(weekly) else "—"
+    return f"D {d} / W {w}"
+
+
+def _risk_comment_for_row(row):
+    value = row.get("trade_caution_comment")
+    if value is None or pd.isna(value):
+        return ""
+    return str(value).strip()
+
 def _client_grid_frame(df, reference, timeframe, weekly_valid):
     columns = [
         "Symbol",
         "Sector",
         "Trend Status",
+        "RSI D/W",
+        "Risk / Caution",
         "Lag vs TLT",
         "Expected In",
         "Expected Turn",
@@ -1396,6 +1435,8 @@ def _client_grid_frame(df, reference, timeframe, weekly_valid):
                 "Symbol": symbol,
                 "Sector": _sector_description(row.get("etf")),
                 "Trend Status": _trend_status_for_row(row, timeframe),
+                "RSI D/W": _rsi_pair_for_row(row),
+                "Risk / Caution": _risk_comment_for_row(row),
                 "Lag vs TLT": _tlt_lag_display(row, timeframe),
                 "Expected In": _forecast_in_display(row),
                 "Expected Turn": _forecast_turn_date(row),
@@ -1855,6 +1896,15 @@ def _render_aggrid(
     )
 
     configure_dropdown_filter(
+        gb, "RSI D/W", width=102, min_width=92,
+        header_tooltip="Wilder RSI(14) daily / weekly. Values >=70 may be overbought.",
+    )
+    configure_dropdown_filter(
+        gb, "Risk / Caution", width=340, min_width=290,
+        header_tooltip="Bearish reversal / trend break blocks; RSI and slowing momentum are warnings only.",
+    )
+
+    configure_dropdown_filter(
         gb,
         "Signal Comment",
         width=210,
@@ -1992,9 +2042,15 @@ def _render_aggrid(
     }""")
 
     gb.configure_column(
-        "Signal Comment",
-        cellStyle=comment_style,
+        "Signal Comment", cellStyle=comment_style,
     )
+    risk_style = JsCode("""function(params) {
+        const t = String(params.value || '').toLowerCase();
+        if (t.startsWith('hold:')) return {backgroundColor:'#fecdd3',color:'#991b1b',fontWeight:'700'};
+        if (t) return {backgroundColor:'#fef3c7',color:'#92400e',fontWeight:'650'};
+        return null;
+    }""")
+    gb.configure_column("Risk / Caution", cellStyle=risk_style, tooltipField="Risk / Caution")
 
     signal_style = JsCode("""function(params) {
         const signal = String(params.value || '').trim().toUpperCase();
@@ -2058,7 +2114,7 @@ def _render_aggrid(
     # Make the visible columns explicit.  This also fixes a v1.4 alignment
     # artifact where helper/hidden fields could produce blank floating filters.
     visible_order = [
-        "#", "Symbol", "Sector", "Trend Status", "Lag vs TLT",
+        "#", "Symbol", "Sector", "Trend Status", "RSI D/W", "Risk / Caution", "Lag vs TLT",
         "Expected In", "Expected Turn", "Signal", "Confidence",
         "Analyst Rating", "Current Price", "Analyst High Target",
         "Upside Potential", "Chart",
@@ -2099,10 +2155,10 @@ def _render_aggrid(
     # Styling must be delivered to the AG Grid component itself. Keep the
     # Signal and Upside Potential cells free for their stronger tier colors.
     market_pulse_grid_css = {
-        ".ag-row.mp-buy-row .ag-cell:not([col-id='Signal']):not([col-id='Upside Potential'])": {
+        ".ag-row.mp-buy-row .ag-cell:not([col-id='Signal']):not([col-id='Upside Potential']):not([col-id='Risk / Caution'])": {
             "background-color": "#eefbf3 !important",
         },
-        ".ag-row.mp-hold-row .ag-cell:not([col-id='Signal']):not([col-id='Upside Potential'])": {
+        ".ag-row.mp-hold-row .ag-cell:not([col-id='Signal']):not([col-id='Upside Potential']):not([col-id='Risk / Caution'])": {
             "background-color": "#fff1f2 !important",
         },
         ".ag-row.mp-buy-row .ag-cell[col-id='Signal']": {
@@ -2170,6 +2226,8 @@ def _render_native_grid_fallback(frame: pd.DataFrame, reference: str, timeframe:
             "Symbol": st.column_config.TextColumn("Symbol", width="small"),
             "Sector": st.column_config.TextColumn("Sector", width="medium"),
             "Trend Status": st.column_config.TextColumn("Trend Status", width="medium"),
+            "RSI D/W": st.column_config.TextColumn("RSI D/W", width="small"),
+            "Risk / Caution": st.column_config.TextColumn("Risk / Caution", width="large"),
             "Lag vs TLT": st.column_config.TextColumn("Lag vs TLT", width="small"),
             "Expected In": st.column_config.TextColumn("Expected In", width="small"),
             "Expected Turn": st.column_config.DateColumn("Expected Turn", format="MMM DD, YYYY", width="small"),

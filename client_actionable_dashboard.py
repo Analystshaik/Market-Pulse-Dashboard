@@ -474,6 +474,22 @@ def _passes_minimum_upside(
 
 
 
+
+
+def _rsi_pair_for_row(row):
+    daily = _num(row.get("daily_rsi14"))
+    weekly = _num(row.get("weekly_rsi14"))
+    d = f"{float(daily):.0f}" if pd.notna(daily) else "—"
+    w = f"{float(weekly):.0f}" if pd.notna(weekly) else "—"
+    return f"D {d} / W {w}"
+
+
+def _risk_comment_for_row(row):
+    value = row.get("trade_caution_comment")
+    if value is None or pd.isna(value):
+        return ""
+    return str(value).strip()
+
 def _client_grid_frame(df, reference, timeframe, weekly_valid):
     reversal_date_label = f"{timeframe.title()} Reversal Date"
     reversal_label = f"{timeframe.title()} Reversal"
@@ -488,6 +504,8 @@ def _client_grid_frame(df, reference, timeframe, weekly_valid):
         "Expected Turn",
         "Signal",
         "Signal Comment",
+        "RSI D/W",
+        "Risk / Caution",
         "Confidence",
         "Analyst Rating",
         "Current Price",
@@ -518,6 +536,8 @@ def _client_grid_frame(df, reference, timeframe, weekly_valid):
                 "Signal Comment": _signal_comment_for_row(
                     row, reference, timeframe, weekly_valid
                 ),
+                "RSI D/W": _rsi_pair_for_row(row),
+                "Risk / Caution": _risk_comment_for_row(row),
                 "Confidence": _confidence_for_row(row),
                 "Analyst Rating": _safe_text(row.get("analyst_rating")),
                 "Current Price": _current_price_value(row),
@@ -773,6 +793,11 @@ def _render_aggrid(frame: pd.DataFrame, reference: str, timeframe: str, grid_hei
 
     gb.configure_column("Signal", width=72, minWidth=65)
     gb.configure_column("Signal Comment", width=210, minWidth=165)
+    gb.configure_column("RSI D/W", width=102, minWidth=90,
+                        headerTooltip="Wilder RSI(14) daily / weekly")
+    gb.configure_column("Risk / Caution", width=340, minWidth=280,
+                        tooltipField="Risk / Caution",
+                        headerTooltip="Trend/reversal blocks; RSI/momentum cautions")
     gb.configure_column("Confidence", width=90, minWidth=82)
     gb.configure_column("Analyst Rating", header_name="Analyst Rating", width=112, minWidth=102)
     gb.configure_column(
@@ -849,6 +874,13 @@ def _render_aggrid(frame: pd.DataFrame, reference: str, timeframe: str, grid_hei
         return null;
     }""")
     gb.configure_column("Signal Comment", cellStyle=comment_style)
+    risk_style = JsCode("""function(params) {
+        const t=String(params.value || '').toLowerCase();
+        if (t.startsWith('hold:')) return {backgroundColor:'#fecdd3',color:'#991b1b',fontWeight:'700'};
+        if (t) return {backgroundColor:'#fef3c7',color:'#92400e',fontWeight:'650'};
+        return null;
+    }""")
+    gb.configure_column("Risk / Caution", cellStyle=risk_style)
 
     signal_style = JsCode("""function(params) {
         const t = String(params.value || '').toUpperCase();
@@ -954,6 +986,8 @@ def _render_native_grid_fallback(frame: pd.DataFrame, reference: str, timeframe:
             ),
             "Signal": st.column_config.TextColumn("Signal", width="small"),
             "Signal Comment": st.column_config.TextColumn("Signal Comment", width="medium"),
+            "RSI D/W": st.column_config.TextColumn("RSI D/W", width="small"),
+            "Risk / Caution": st.column_config.TextColumn("Risk / Caution", width="large"),
             "Confidence": st.column_config.TextColumn("Confidence", width="small"),
             "Analyst Rating": st.column_config.TextColumn("Analyst Rating", width="small"),
             "Current Price": st.column_config.NumberColumn("Price", format="$%.2f", width="small"),
