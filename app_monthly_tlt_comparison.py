@@ -1,3 +1,6 @@
+from marketvector_auth import require_login as _mv_require_login
+_mv_require_login()
+
 from monthly_tlt_comparison_dashboard import render_monthly_tlt_comparison_dashboard
 
 render_monthly_tlt_comparison_dashboard()

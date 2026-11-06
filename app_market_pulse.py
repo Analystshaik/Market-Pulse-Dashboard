@@ -1,3 +1,6 @@
+from marketvector_auth import require_login as _mv_require_login
+_mv_require_login()
+
 from market_pulse_dashboard import render_market_pulse_dashboard
 
 render_market_pulse_dashboard()

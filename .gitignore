@@ -7,3 +7,9 @@ Thumbs.db
 data/*.sqlite-wal
 data/*.sqlite-shm
 data/*.sqlite-journal
+
+# MarketVector local/Cloud secrets - NEVER commit
+.streamlit/secrets.toml
+**/.streamlit/secrets.toml
+marketvector_accounts.json
+marketvector_secrets.toml

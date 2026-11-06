@@ -1,3 +1,4 @@
+# MARKETVECTOR_CLIENT_HIGH_TARGET_COLUMN_FIX_v1.0
 from __future__ import annotations
 
 from io import BytesIO
@@ -509,7 +510,7 @@ def _client_grid_frame(df, reference, timeframe, weekly_valid):
         "Confidence",
         "Analyst Rating",
         "Current Price",
-        "Analyst Median",
+        "Analyst High Target",
         "_Analyst Low",
         "_Analyst High",
         "_Target Tooltip",
@@ -541,7 +542,7 @@ def _client_grid_frame(df, reference, timeframe, weekly_valid):
                 "Confidence": _confidence_for_row(row),
                 "Analyst Rating": _safe_text(row.get("analyst_rating")),
                 "Current Price": _current_price_value(row),
-                "Analyst Median": _median_value(row),
+                "Analyst High Target": _num(row.get("target_12m_high")),
                 "_Analyst Low": _num(row.get("target_12m_low")),
                 "_Analyst High": _num(row.get("target_12m_high")),
                 "_Target Tooltip": (
@@ -808,13 +809,13 @@ def _render_aggrid(frame: pd.DataFrame, reference: str, timeframe: str, grid_hei
         valueFormatter="value == null || isNaN(value) ? '' : '$' + Number(value).toFixed(2)",
     )
     gb.configure_column(
-        "Analyst Median",
-        header_name="Median Target",
-        width=105,
-        minWidth=96,
+        "Analyst High Target",
+        header_name="Analyst High Target",
+        width=148,
+        minWidth=126,
         tooltipField="_Target Tooltip",
         valueFormatter="value == null || isNaN(value) ? '' : '$' + Number(value).toFixed(2)",
-        headerTooltip="Hover a Median Target cell to see analyst Low and High targets",
+        headerTooltip="Shows the analyst High target; hover for the Low and High range",
     )
     gb.configure_column(
         "Upside Potential",
@@ -991,8 +992,8 @@ def _render_native_grid_fallback(frame: pd.DataFrame, reference: str, timeframe:
             "Confidence": st.column_config.TextColumn("Confidence", width="small"),
             "Analyst Rating": st.column_config.TextColumn("Analyst Rating", width="small"),
             "Current Price": st.column_config.NumberColumn("Price", format="$%.2f", width="small"),
-            "Analyst Median": st.column_config.NumberColumn(
-                "Median Target",
+            "Analyst High Target": st.column_config.NumberColumn(
+                "Analyst High Target",
                 format="$%.2f",
                 width="small",
                 help="Install streamlit-aggrid to hover and see analyst Low / High targets.",
@@ -1388,7 +1389,7 @@ def _render_grid(
         )
     else:
         st.warning(
-            "Median-target Low/High hover requires `streamlit-aggrid`. "
+            "High-target Low/High hover requires `streamlit-aggrid`. "
             "Run `python -m pip install streamlit-aggrid` once, then restart the dashboard.",
             icon="⚠️",
         )

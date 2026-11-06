@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+if __name__ == "__main__":
+    from marketvector_auth import require_login as _mv_require_login
+    _mv_require_login()
+
+
 from io import BytesIO
 
 import html
