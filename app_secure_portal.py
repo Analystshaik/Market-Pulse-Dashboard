@@ -22,8 +22,11 @@ DASHBOARDS = [
     ("Market Pulse", "app_market_pulse.py", "📊", "market_pulse_dashboard.py"),
     ("TLT Daily", "app_tlt_actionable_daily_fast.py", "📈", "client_actionable_dashboard.py"),
     ("TLT Weekly", "app_tlt_actionable_weekly_fast.py", "📅", "client_actionable_dashboard.py"),
+    # TLT_RESEARCH_VISIBILITY_NAV_V1
+    ("TLT Research / Watch", "app_tlt_positive_research.py", "🔎", "tlt_research_client_grid.py"),
     ("TBT Daily", "app_tbt_actionable_daily_fast.py", "📉", "client_actionable_dashboard.py"),
     ("TBT Weekly", "app_tbt_actionable_weekly_fast.py", "🗓️", "client_actionable_dashboard.py"),
+    ("TBT Positive Research / Watch", "app_tbt_positive_research.py", "🔎", "tbt_positive_research_dashboard.py"),
     ("Monthly TLT vs SPY/QQQ/DIA", "app_monthly_tlt_comparison.py", "📆", "monthly_tlt_comparison_dashboard.py"),
 ]
 

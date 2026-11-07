@@ -1,0 +1,7 @@
+{
+  "min_score": 45.0,
+  "min_hit_rate": 0.40,
+  "min_samples": 5,
+  "require_positive_correlation": true,
+  "max_lag_days": 7
+}

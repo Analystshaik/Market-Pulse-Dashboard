@@ -1637,19 +1637,66 @@ def render_client_dashboard(reference: str, timeframe: str):
             unsafe_allow_html=True,
         )
 
-    if "visible_default" in stock.columns:
-        stock = stock[
-            pd.to_numeric(stock["visible_default"], errors="coerce").fillna(1).eq(1)
-        ].copy()
-
-    # Global minimum-upside filter across ALL four client dashboards.
-    # Apply this before Actionable Now / On Hold are split, so the same
-    # threshold governs every primary grid and every export/search result.
-    stock = stock[
-        stock.apply(
-            _passes_minimum_upside,
-            axis=1,
+    # MARKETVECTOR_TLT_PENDING_RENDER_GUARD_V11
+    # Safety guard: provenance is authoritative, not downstream trade fields.
+    # If a later postprocessor rewrote client_trade_valid/client_trade_basis,
+    # fallback research-only rows cannot appear as Actionable Buy in the UI.
+    if reference.upper() == "TLT" and {"universe_source", "research_qualified"}.issubset(stock.columns):
+        _tlt_pending_provenance = (
+            stock["universe_source"].fillna("").astype(str).eq("POSITIVE_TLT_RESEARCH")
+            & pd.to_numeric(stock["research_qualified"], errors="coerce").fillna(0).eq(1)
         )
+        if "section" in stock.columns:
+            _tlt_pending_provenance = _tlt_pending_provenance | stock["section"].fillna("").astype(str).eq("RESEARCH_PENDING_SETUP")
+        if _tlt_pending_provenance.any():
+            stock = stock.copy()
+            stock.loc[_tlt_pending_provenance, "client_trade_basis"] = "TLT_RESEARCH_PENDING_STOCK_CONFIRMATION"
+            stock.loc[_tlt_pending_provenance, "client_signal"] = "Hold"
+            stock.loc[_tlt_pending_provenance, "client_trade_valid"] = 0
+            stock.loc[_tlt_pending_provenance, "client_actionable_now"] = 0
+            stock.loc[_tlt_pending_provenance, "top_actionable_flag"] = 0
+            stock.loc[_tlt_pending_provenance, "action"] = "HOLD"
+            stock.loc[_tlt_pending_provenance, "signal"] = "Hold"
+            stock.loc[_tlt_pending_provenance, "trade_risk_level"] = "BLOCKED"
+            stock.loc[_tlt_pending_provenance, "trade_caution_comment"] = (
+                "Hold: research-qualified TLT follower; stock-specific trade validation pending"
+            )
+            if "client_reversal_trade_valid" in stock.columns:
+                stock.loc[_tlt_pending_provenance, "client_reversal_trade_valid"] = 0
+
+    # MARKETVECTOR_TLT_PENDING_ON_HOLD_VISIBILITY_V1
+    # Display newly admitted TLT On Hold research rows even if analysts have no
+    # target, or the stock is overextended. This never bypasses an Actionable
+    # Now eligibility gate because these rows are explicitly client_trade_valid=0.
+    pending_hold = (
+        reference.upper() == "TLT"
+        and "client_trade_basis" in stock.columns
+    )
+    if pending_hold:
+        pending_hold = (
+            stock["client_trade_basis"].astype(str)
+            .eq("TLT_RESEARCH_PENDING_STOCK_CONFIRMATION")
+            & pd.to_numeric(
+                stock.get("client_trade_valid", pd.Series(0, index=stock.index)),
+                errors="coerce",
+            ).fillna(0).eq(0)
+            & stock.get("client_signal", pd.Series("Hold", index=stock.index))
+                .astype(str).str.upper().eq("HOLD")
+        )
+    else:
+        pending_hold = pd.Series(False, index=stock.index)
+
+    if "visible_default" in stock.columns:
+        normal_visibility = pd.to_numeric(
+            stock["visible_default"], errors="coerce"
+        ).fillna(1).eq(1)
+        stock = stock[normal_visibility | pending_hold].copy()
+        pending_hold = pending_hold.reindex(stock.index, fill_value=False)
+
+    # Preserve the existing 25% upside screen on real trading-signal rows.
+    # Exempt ONLY TLT research-pending HOLD candidates, not actionable Buys.
+    stock = stock[
+        stock.apply(_passes_minimum_upside, axis=1) | pending_hold
     ].copy()
 
     base_watch = _dedupe_watch_list(stock)
@@ -1762,6 +1809,20 @@ def render_client_dashboard(reference: str, timeframe: str):
         key=f"{reference}_{timeframe}_hold",
         minimum_visible_rows=25,
     )
+
+    # TBT_RESEARCH_THIRD_GRID_v1.3 — presentation-only; preserves all trading gates.
+    if reference.upper() == "TBT":
+        from tbt_research_client_grid import render_research_grid
+        render_research_grid(
+            db_path=db,
+            timeframe=timeframe,
+            filter_state=filter_state,
+        )
+
+    # TLT_RESEARCH_VISIBILITY_GRID_V1 — research-only third grid; Buy rules unchanged.
+    if reference.upper() == 'TLT':
+        from tlt_research_client_grid import render_research_grid
+        render_research_grid(db, timeframe, filter_state)
 
     if show_more:
         if timeframe == "DAILY":
