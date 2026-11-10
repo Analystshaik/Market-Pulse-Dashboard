@@ -39,10 +39,16 @@ if choice.reference is None:
     if not DB_PATH.is_file():
         st.error("Snapshot data is unavailable. Confirm that the Cloud database was deployed and ACTIONABLE_SNAPSHOT_DB is correct.")
 else:
-    # Keep the existing Daily dashboard render path exactly as it was before:
-    # same columns, Buy/Hold filters, RSI, reversals and upside rules.
-    # Only the reference is selected dynamically.
-    from client_actionable_dashboard import render_client_dashboard
+    # Gate-selected Home uses Market Pulse Daily presentation.
+    # Confirmation and Buy/Hold eligibility remain snapshot-driven.
+    # MARKETVECTOR_HOME_PULSE_AND_COLUMNS_V1_0
+    # Use the SAME Daily Market Pulse renderer for both TLT and TBT.
+    # select_home(DB_PATH) determines the choice from confirmed Weekly STATUS.
+    from market_pulse_dashboard import render_market_pulse_dashboard
 
-    render_client_dashboard(choice.reference, "DAILY")
+    render_market_pulse_dashboard(
+        reference_override=choice.reference,
+        timeframe_override="DAILY",
+        home_mode=True,
+    )
     st.caption(f"Auto-selected {choice.reference} Daily from Weekly STATUS. {choice.explanation}. Updated when snapshot data refreshes and the app reruns.")

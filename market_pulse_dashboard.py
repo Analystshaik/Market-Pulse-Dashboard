@@ -2858,7 +2858,12 @@ def _weekly_tone(weekly_valid):
     )
 
 
-def render_market_pulse_dashboard():
+def render_market_pulse_dashboard(reference_override=None, timeframe_override=None, home_mode=False):
+    # MARKETVECTOR_HOME_PULSE_AND_COLUMNS_V1_0
+    # Overrides are for the gate-selected Home only; the normal Market Pulse
+    # page still exposes both selectors. No trading-state override occurs.
+    if home_mode and (reference_override is None or str(timeframe_override).upper() != 'DAILY'):
+        raise ValueError('Home requires a selected TLT/TBT reference and DAILY timeframe')
     st.set_page_config(
         page_title="Market Pulse · TLT/TBT Signal Intelligence",
         page_icon="📈",
@@ -2866,28 +2871,32 @@ def render_market_pulse_dashboard():
         initial_sidebar_state="expanded",
     )
 
-    st.sidebar.markdown("## Market Pulse")
-
-    # Fixed light theme. Sidebar remains expanded initially and can be collapsed manually.
+    # Fixed light theme. Preserve the existing Market Pulse design.
     day_mode = True
 
-    reference = st.sidebar.radio(
-        "Reference",
-        options=["TLT", "TBT"],
-        horizontal=True,
-        key="market_pulse_reference",
-    )
+    # Gate-selected Home fixes reference/timeframe; standalone Market Pulse
+    # remains interactive with both reference and timeframe radio buttons.
+    if reference_override is None:
+        st.sidebar.markdown("## Market Pulse")
+        reference = st.sidebar.radio(
+            "Reference", options=["TLT", "TBT"], horizontal=True,
+            key="market_pulse_reference",
+        )
+    else:
+        reference = str(reference_override).strip().upper()
 
-    timeframe = st.sidebar.radio(
-        "Timeframe",
-        options=["DAILY", "WEEKLY"],
-        horizontal=True,
-        format_func=lambda x: x.title(),
-        key="market_pulse_timeframe",
-    )
+    if timeframe_override is None:
+        timeframe = st.sidebar.radio(
+            "Timeframe", options=["DAILY", "WEEKLY"], horizontal=True,
+            format_func=lambda x: x.title(), key="market_pulse_timeframe",
+        )
+    else:
+        timeframe = str(timeframe_override).strip().upper()
 
     reference = reference.upper()
     timeframe = timeframe.upper()
+    if reference not in ("TLT", "TBT") or timeframe not in ("DAILY", "WEEKLY"):
+        raise ValueError("Invalid Market Pulse reference/timeframe")
 
     st.markdown(
         """
@@ -3583,8 +3592,12 @@ def render_market_pulse_dashboard():
     asof = pd.to_datetime(s.get("reference_asof"), errors="coerce")
     asof_text = asof.strftime("%B %d, %Y") if pd.notna(asof) else "latest available session"
 
+    page_heading = (
+        f"{reference} Market Pulse · {timeframe.title()}"
+        if home_mode else f"Market Pulse · {timeframe.title()}"
+    )
     st.markdown(
-        f'<h1 class="market-pulse-page-heading">Market Pulse · {timeframe.title()}</h1>',
+        f'<h1 class="market-pulse-page-heading">{page_heading}</h1>',
         unsafe_allow_html=True,
     )
 

@@ -19,7 +19,9 @@ ROOT = Path(__file__).resolve().parent
 
 HOME = ("Home · Active Daily", "app_active_daily.py", "🏠")
 DASHBOARDS = [
-    ("Market Pulse", "app_market_pulse.py", "📊", "market_pulse_dashboard.py"),
+    # MARKETVECTOR_HOME_PULSE_AND_COLUMNS_V1_0: fixed-reference Pulse Daily views
+    ("TLT Pulse Daily", "app_tlt_market_pulse_daily.py", "📈", "market_pulse_dashboard.py"),
+    ("TBT Pulse Daily", "app_tbt_market_pulse_daily.py", "📉", "market_pulse_dashboard.py"),
     ("TLT Daily", "app_tlt_actionable_daily_fast.py", "📈", "client_actionable_dashboard.py"),
     ("TLT Weekly", "app_tlt_actionable_weekly_fast.py", "📅", "client_actionable_dashboard.py"),
     # TLT_RESEARCH_VISIBILITY_NAV_V1

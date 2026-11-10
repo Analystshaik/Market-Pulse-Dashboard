@@ -766,6 +766,7 @@ def _render_aggrid(frame: pd.DataFrame, reference: str, timeframe: str, grid_hei
         header_name="Reversal Date",
         width=110,
         minWidth=98,
+        hide=True,  # MARKETVECTOR_HOME_PULSE_AND_COLUMNS_V1_0 — display only
         valueFormatter=(
             "value == null || value === '' || value === 'NaT' || value === 'None' "
             "? '' "
@@ -817,7 +818,7 @@ def _render_aggrid(frame: pd.DataFrame, reference: str, timeframe: str, grid_hei
     )
 
     gb.configure_column("Signal", width=72, minWidth=65)
-    gb.configure_column("Signal Comment", width=210, minWidth=165)
+    gb.configure_column("Signal Comment", width=210, minWidth=165, hide=True)
     gb.configure_column("RSI D/W", width=102, minWidth=90,
                         headerTooltip="Wilder RSI(14) daily / weekly")
     gb.configure_column("Risk / Caution", width=340, minWidth=280,
@@ -967,7 +968,8 @@ def _render_aggrid(frame: pd.DataFrame, reference: str, timeframe: str, grid_hei
 def _render_native_grid_fallback(frame: pd.DataFrame, reference: str, timeframe: str, grid_height: int, key: str):
     """Fallback used only when streamlit-aggrid is not installed."""
     display = frame.drop(
-        columns=["_Analyst Low", "_Analyst High", "_Target Tooltip"],
+        columns=["_Analyst Low", "_Analyst High", "_Target Tooltip",
+                 "Daily Reversal Date", "Weekly Reversal Date", "Signal Comment"],
         errors="ignore",
     )
 
@@ -1000,7 +1002,6 @@ def _render_native_grid_fallback(frame: pd.DataFrame, reference: str, timeframe:
         column_config={
             "Symbol": st.column_config.TextColumn("Symbol", width="small"),
             "Sector": st.column_config.TextColumn("Sector", width="small"),
-            reversal_date_col: st.column_config.DateColumn("Reversal Date", format="MMM DD, YYYY", width="small"),
             reversal_col: st.column_config.TextColumn(reversal_col, width="small"),
             "Lag vs TLT": st.column_config.TextColumn("Lag vs TLT", width="small"),
             "Expected In": st.column_config.TextColumn("Expected In", width="small"),
@@ -1010,7 +1011,6 @@ def _render_native_grid_fallback(frame: pd.DataFrame, reference: str, timeframe:
                 width="small",
             ),
             "Signal": st.column_config.TextColumn("Signal", width="small"),
-            "Signal Comment": st.column_config.TextColumn("Signal Comment", width="medium"),
             "RSI D/W": st.column_config.TextColumn("RSI D/W", width="small"),
             "Risk / Caution": st.column_config.TextColumn("Risk / Caution", width="large"),
             "Confidence": st.column_config.TextColumn("Confidence", width="small"),
@@ -1046,6 +1046,9 @@ def _apply_grid_quick_search(
         "_Analyst Low",
         "_Analyst High",
         "_Target Tooltip",
+        "Daily Reversal Date",
+        "Weekly Reversal Date",
+        "Signal Comment",
     }
 
     searchable_cols = [
@@ -1087,6 +1090,9 @@ def _grid_export_frame(
             "_Analyst Low",
             "_Analyst High",
             "_Target Tooltip",
+            "Daily Reversal Date",
+            "Weekly Reversal Date",
+            "Signal Comment",
         ],
         errors="ignore",
     ).copy()

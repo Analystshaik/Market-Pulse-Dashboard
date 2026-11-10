@@ -10,6 +10,13 @@ if not exist ".git" (
     echo Run 02_GITHUB_FIRST_DEPLOY.bat first.
     exit /b 1
 )
+REM MV_RESEARCH_DEPLOY_GUARD_V1 -- Fail closed if research pages/grids/data are missing.
+python VERIFY_MARKETVECTOR_RESEARCH_DEPLOY.py --root ".." --strict-data
+if errorlevel 1 (
+    echo ERROR: MarketVector Research deployment check failed. Nothing pushed.
+    exit /b 1
+)
+
 
 git lfs install >nul
 git add .
