@@ -159,8 +159,11 @@ def render_research_grid(db_path,timeframe,filter_state):
     # remove candidates from the underlying research data.
     frame=common._filter_grid(frame,filter_state['search'],filter_state['signals'],
                               filter_state['confidences'],filter_state['ratings'])
-    st.caption(f'{len(model)} distinct research candidates in the export · {len(frame)} match the current sidebar filters · Research lag measured in trading days (not a predicted Buy date). "Confidence" is statistical research quality.')
+    st.caption(f'{len(model)} distinct research candidates in the export · {len(frame)} match the current sidebar filters · "Confidence" is statistical research quality, not an automatic Buy.')
     key=f'TBT_{timeframe}_research_watch'
+    # RESEARCH_GRID_COMPACT_COLUMNS_v1.0 — watch-grid-only display, no DB changes
+    from research_compact_columns import compact_research_frame
+    frame = compact_research_frame(frame, timeframe)
     frame=common._render_grid_toolbar(frame,'TBT',timeframe,key)
     if frame.empty:
         st.info('No research stocks match the sidebar filters or grid quick search.')

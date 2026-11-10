@@ -158,8 +158,11 @@ def render_research_grid(db_path,timeframe,filter_state,standalone=False):
     frame=frame_from_rows(rows,timeframe,common._client_grid_frame)
     frame=common._filter_grid(frame,filter_state.get('search',''),filter_state.get('signals',[]),
                              filter_state.get('confidences',[]),filter_state.get('ratings',[]))
-    st.caption(f'Research lag is in trading days on BOTH pages. No 25% upside filter is applied to this grid. {len(frame)} rows match sidebar filters.')
+    st.caption(f'No 25% upside filter is applied to this grid. {len(frame)} rows match sidebar filters.')
     key=f'TLT_{timeframe}_tlt_research_watch'
+    # RESEARCH_GRID_COMPACT_COLUMNS_v1.0 — watch-grid-only display, no DB changes
+    from research_compact_columns import compact_research_frame
+    frame = compact_research_frame(frame, timeframe)
     frame=common._render_grid_toolbar(frame,'TLT',timeframe,key)
     if frame.empty:
         st.info('No research rows match the current filters.')

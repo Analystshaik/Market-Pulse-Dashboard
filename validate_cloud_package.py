@@ -5,7 +5,7 @@ ROOT=Path(__file__).resolve().parent; DB=ROOT/"data"/"actionable_cloud.sqlite"
 BASE_APPS=["client_actionable_dashboard.py","market_pulse_dashboard.py","app_tlt_actionable_daily_fast.py","app_tlt_actionable_weekly_fast.py","app_tbt_actionable_daily_fast.py","app_tbt_actionable_weekly_fast.py","app_market_pulse.py"]
 BASE_TABLES=["mv_actionable_dashboard_daily","mv_actionable_dashboard_weekly"]
 MONTHLY_APPS=["monthly_tlt_comparison_dashboard.py","app_monthly_tlt_comparison.py"]
-MONTHLY_TABLES=["mv_index_constituents_current","mv_tlt_monthly_bars","mv_tlt_reversals_month","mv_tlt_monthly_stock_relationship","mv_tlt_monthly_current_snapshot","mv_tlt_monthly_index_event_summary"]
+MONTHLY_TABLES=["mv_index_constituents_current","mv_tlt_monthly_bars","mv_tlt_reversals_month","mv_tlt_monthly_stock_relationship","mv_tlt_monthly_data_coverage","mv_tlt_monthly_current_snapshot","mv_tlt_monthly_index_event_summary"]
 def fail(m): print("ERROR:",m); raise SystemExit(1)
 print("="*88); print("TLT/TBT STREAMLIT CLOUD PACKAGE VALIDATION"); print("="*88)
 if not DB.exists(): fail(f"Missing {DB}")

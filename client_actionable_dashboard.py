@@ -691,7 +691,8 @@ def _style_grid(frame):
         return ""
 
     styler = frame.style.apply(row_style, axis=1)
-    styler = styler.map(comment_style, subset=["Signal Comment"])
+    if "Signal Comment" in frame.columns:
+        styler = styler.map(comment_style, subset=["Signal Comment"])
     styler = styler.map(conf_style, subset=["Confidence"])
     styler = styler.map(rating_style, subset=["Analyst Rating"])
     styler = styler.map(upside_style, subset=["Upside Potential"])
@@ -700,6 +701,29 @@ def _style_grid(frame):
 
 def _aggrid_row_quality(row):
     return _row_quality_bucket(row)
+
+
+
+def _mv_compact_research_grid_options(options, grid, key):
+    """RESEARCH_GRID_COMPACT_COLUMNS_v1.0: prune phantom definitions for research only.
+
+    Other Actionable/On Hold grids pass through completely unchanged.
+    """
+    if "research_watch" not in str(key).lower():
+        return options
+    present = {str(column) for column in grid.columns}
+    def allowed(definition):
+        if not isinstance(definition, dict):
+            return True
+        name = definition.get("field")
+        if name is None:
+            name = definition.get("colId")
+        return name is None or str(name) in present
+    if isinstance(options, dict) and isinstance(options.get("columnDefs"), list):
+        options["columnDefs"] = [
+            item for item in options["columnDefs"] if allowed(item)
+        ]
+    return options
 
 
 def _render_aggrid(frame: pd.DataFrame, reference: str, timeframe: str, grid_height: int, key: str):
@@ -928,7 +952,7 @@ def _render_aggrid(frame: pd.DataFrame, reference: str, timeframe: str, grid_hei
 
     AgGrid(
         grid,
-        gridOptions=gb.build(),
+        gridOptions=_mv_compact_research_grid_options(gb.build(), grid, key),
         height=grid_height,
         width="100%",
         theme="streamlit",

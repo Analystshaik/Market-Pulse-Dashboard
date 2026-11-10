@@ -1,10 +1,5 @@
 from __future__ import annotations
 
-if __name__ == "__main__":
-    from marketvector_auth import require_login as _mv_require_login
-    _mv_require_login()
-
-
 from pathlib import Path
 import json, os, sqlite3
 import numpy as np
@@ -18,7 +13,7 @@ except Exception:
     AGGRID=False
 
 APP_DIR=Path(__file__).resolve().parent
-TABLES=["mv_tlt_monthly_bars","mv_tlt_reversals_month","mv_tlt_monthly_current_snapshot","mv_tlt_monthly_index_event_summary"]
+TABLES=["mv_tlt_monthly_bars","mv_tlt_reversals_month","mv_tlt_monthly_current_snapshot","mv_tlt_monthly_index_event_summary","mv_tlt_monthly_data_coverage"]
 
 
 def resolve_db():
@@ -125,17 +120,17 @@ def render_monthly_tlt_comparison_dashboard():
     st.caption("Current constituent universe · Monthly candlestick event study · Best response lag 0–3 months")
     if missing:
         st.error("Monthly analysis tables are missing: "+", ".join(missing))
-        st.code("python update_market_index_constituents.py\npython update_monthly_index_universe_ibkr.py\npython analyze_tlt_monthly_index_comparison.py")
+        st.code("python update_market_index_constituents.py\npython analyze_tlt_monthly_index_comparison.py")
         st.stop()
-    snap=data["mv_tlt_monthly_current_snapshot"].copy(); rev=data["mv_tlt_reversals_month"].copy(); bars=data["mv_tlt_monthly_bars"].copy(); hist=data["mv_tlt_monthly_index_event_summary"].copy()
+    snap=data["mv_tlt_monthly_current_snapshot"].copy(); rev=data["mv_tlt_reversals_month"].copy(); bars=data["mv_tlt_monthly_bars"].copy(); hist=data["mv_tlt_monthly_index_event_summary"].copy(); coverage=data["mv_tlt_monthly_data_coverage"].copy()
     confirmed=rev[(pd.to_numeric(rev.confirmed,errors="coerce")==1)&rev.effective_month.notna()].sort_values("effective_month")
     if confirmed.empty: st.error("No confirmed monthly TLT reversals are available."); st.stop()
     latest=confirmed.iloc[-1]
     pending=rev[pd.to_numeric(rev.confirmed,errors="coerce").fillna(0)==0].sort_values("signal_month")
 
     indexes=st.sidebar.multiselect("Index membership",["SPY","QQQ","DIA"],default=["SPY","QQQ","DIA"])
-    rels=st.sidebar.multiselect("Relationship",["POSITIVE_TLT","INVERSE_TLT","NO_DATA"],default=["POSITIVE_TLT","INVERSE_TLT"])
-    confs=st.sidebar.multiselect("Confidence",["STRONG","GOOD","DEVELOPING","LOW DATA","NO DATA"],default=["STRONG","GOOD","DEVELOPING","LOW DATA"])
+    rels=st.sidebar.multiselect("Relationship",["POSITIVE_TLT","INVERSE_TLT","NO_DATA"],default=["POSITIVE_TLT","INVERSE_TLT","NO_DATA"])
+    confs=st.sidebar.multiselect("Confidence",["STRONG","GOOD","DEVELOPING","LOW DATA","NO DATA"],default=["STRONG","GOOD","DEVELOPING","LOW DATA","NO DATA"])
     minhit=st.sidebar.slider("Minimum historical hit rate",0,100,0,5)
     search=st.sidebar.text_input("Search symbol / company","").strip().upper()
 
@@ -158,7 +153,7 @@ def render_monthly_tlt_comparison_dashboard():
     st.markdown('<div class="mv-section">TLT monthly reversal map</div>',unsafe_allow_html=True)
     st.plotly_chart(candlestick(bars,rev,day),use_container_width=True,config={"displayModeBar":False})
 
-    tabs=st.tabs(["Current Signal","All Stocks","TLT Reversal History","Index Event History","Method"])
+    tabs=st.tabs(["Current Signal","All Stocks","Data Coverage","TLT Reversal History","Index Event History","Method"])
     with tabs[0]:
         ex=explode_index(f)
         sums=[]
@@ -174,7 +169,7 @@ def render_monthly_tlt_comparison_dashboard():
         with b:
             z=f.dropna(subset=["best_lag_months"]); counts=z.best_lag_months.astype(int).value_counts().sort_index(); fig=go.Figure(go.Bar(x=[f"Lag {i}" for i in counts.index],y=counts.values,text=counts.values,textposition="auto")); fig.update_layout(title="Best monthly response lag",height=280,template="plotly_white" if day else "plotly_dark",margin=dict(l=5,r=5,t=45,b=5),yaxis_title="Stocks")
             st.plotly_chart(fig,use_container_width=True,config={"displayModeBar":False})
-        current=f[f.current_status.ne("PAST WINDOW")].copy()
+        current=f[(f.relationship_type!="NO_DATA") & f.current_status.ne("PAST WINDOW")].copy()
         current=current.sort_values(["confidence","hit_rate"],ascending=[True,False])
         view=pd.DataFrame({"Symbol":current.symbol,"Indexes":current.indexes,"Company":current.company,"Sector":current.sector,"Relationship":current.relationship_type,"Best Lag":current.best_lag_months,"Hit Rate":pd.to_numeric(current.hit_rate,errors="coerce")*100,"Bull Hit":pd.to_numeric(current.bullish_hit_rate,errors="coerce")*100,"Bear Hit":pd.to_numeric(current.bearish_hit_rate,errors="coerce")*100,"Avg Response":current.avg_response_pct,"Corr":current.corr_signal,"Samples":current.samples,"Confidence":current.confidence,"Expected":current.expected_stock_direction,"Current Status":current.current_status,"Current Mo Return":current.current_month_return_pct,"Response Return":current.response_month_return_pct})
         st.markdown('<div class="mv-section">Stocks in the current 0–3 month response window</div>',unsafe_allow_html=True)
@@ -184,17 +179,23 @@ def render_monthly_tlt_comparison_dashboard():
         allv=allv.sort_values(["Hit Rate","Samples"],ascending=[False,False]); grid(allv,"monthly_all",650)
         st.download_button("Download filtered CSV",allv.to_csv(index=False).encode(),"monthly_tlt_spy_qqq_dia.csv","text/csv")
     with tabs[2]:
-        rr=rev.sort_values("signal_month",ascending=False).copy(); rr["Confirmed"]=pd.to_numeric(rr.confirmed,errors="coerce").map({1:"Yes",0:"Pending"}); st.dataframe(rr[["signal_month","effective_month","direction","pattern","trend_context","Confirmed","confirmation_note","tlt_close"]],use_container_width=True,hide_index=True)
+        cv=coverage.copy().sort_values(["coverage_status","indexes","symbol"])
+        st.caption("This uses only OHLC already stored in the local SQLite database. No IBKR download is required for this dashboard.")
+        st.dataframe(cv[["symbol","indexes","company","sector","coverage_status","daily_rows","monthly_bars","first_bar_date","last_bar_date","source_tables","relationship_type","samples","confidence"]],use_container_width=True,hide_index=True,height=620)
+        missing_cv=cv[cv.coverage_status=="NO DATA"]
+        if not missing_cv.empty: st.warning(f"{len(missing_cv)} current constituent(s) have no stored daily OHLC and are kept as NO DATA rather than downloaded automatically.")
     with tabs[3]:
+        rr=rev.sort_values("signal_month",ascending=False).copy(); rr["Confirmed"]=pd.to_numeric(rr.confirmed,errors="coerce").map({1:"Yes",0:"Pending"}); st.dataframe(rr[["signal_month","effective_month","direction","pattern","trend_context","Confirmed","confirmation_note","tlt_close"]],use_container_width=True,hide_index=True)
+    with tabs[4]:
         hh=hist.copy(); hh["aligned_breadth_pct"]=pd.to_numeric(hh.aligned_breadth,errors="coerce")*100
         choice=st.selectbox("Event lag to compare",[0,1,2,3],index=1,key="event_lag")
         h=hh[hh.lag_months==choice].sort_values(["effective_month","index_etf"],ascending=[False,True])
         st.dataframe(h[["index_etf","signal_month","effective_month","direction","pattern","sample_count","aligned_breadth_pct","average_return_pct","median_return_pct"]],use_container_width=True,hide_index=True)
-    with tabs[4]:
+    with tabs[5]:
         st.markdown("""
 **How the analysis works**
 
-- Daily OHLC bars are aggregated into calendar-month candles.
+- Daily OHLC bars already stored in `relationship_bars_day` are aggregated into calendar-month candles. If needed, existing `bars_day` rows are used as a local SQLite fallback. **No IBKR download is performed by the monthly refresh.**
 - TLT bullish and bearish reversal candles are detected with the same pattern families used elsewhere in the project: engulfing, key/outside reversal, hammer/shooting star, piercing/dark-cloud, harami, and morning/evening star.
 - Dark Cloud Cover follows your existing rule: next-month confirmation is required only when the monthly TLT trend is UP.
 - Each stock is tested at lag 0, 1, 2, and 3 months after every confirmed TLT monthly reversal.
