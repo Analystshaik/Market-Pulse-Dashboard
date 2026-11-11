@@ -14,6 +14,9 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 
+# MARKETVECTOR_UI_FIT_V2 view helper
+from mv_ui_fit_v2 import compact_risk_grid as _mv_compact_risk_grid, responsive_options as _mv_responsive_options, sidebar_button_css as _mv_sidebar_button_css
+
 try:
     from st_aggrid import AgGrid, GridOptionsBuilder, JsCode
     AGGRID_AVAILABLE = True
@@ -746,6 +749,8 @@ def _render_aggrid(frame: pd.DataFrame, reference: str, timeframe: str, grid_hei
         )
 
     grid["_Quality"] = grid.apply(_aggrid_row_quality, axis=1)
+    # MARKETVECTOR_UI_FIT_V2 render-only risk labels
+    grid = _mv_compact_risk_grid(grid, key)
 
     gb = GridOptionsBuilder.from_dataframe(grid)
     gb.configure_default_column(
@@ -953,7 +958,7 @@ def _render_aggrid(frame: pd.DataFrame, reference: str, timeframe: str, grid_hei
 
     AgGrid(
         grid,
-        gridOptions=_mv_compact_research_grid_options(gb.build(), grid, key),
+        gridOptions=_mv_responsive_options(_mv_compact_research_grid_options(gb.build(), grid, key), reference, timeframe, key),
         height=grid_height,
         width="100%",
         theme="streamlit",

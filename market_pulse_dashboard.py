@@ -19,6 +19,9 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 
+# MARKETVECTOR_UI_FIT_V2 view helper
+from mv_ui_fit_v2 import compact_risk_grid as _mv_compact_risk_grid, responsive_options as _mv_responsive_options, sidebar_button_css as _mv_sidebar_button_css
+
 try:
     import plotly.graph_objects as go
     PLOTLY_AVAILABLE = True
@@ -1622,6 +1625,8 @@ def _render_aggrid(
     # all excluded fields before GridOptionsBuilder (no floating filters).
     grid["_Quality"] = grid.apply(_aggrid_row_quality, axis=1)
     grid = grid.drop(columns=list(MP_REMOVED_GRID_COLUMNS), errors="ignore")
+    # MARKETVECTOR_UI_FIT_V2 render-only risk labels
+    grid = _mv_compact_risk_grid(grid, key)
 
     if "Chart" in grid.columns:
         grid["Chart"] = (
@@ -2188,12 +2193,12 @@ def _render_aggrid(
 
     AgGrid(
         grid,
-        gridOptions=options,
+        gridOptions=_mv_responsive_options(options, reference, timeframe, key),
         custom_css=market_pulse_grid_css,
         height=grid_height,
         width="100%",
         theme="balham",
-        fit_columns_on_grid_load=False,
+        fit_columns_on_grid_load=True,
         allow_unsafe_jscode=True,
         enable_enterprise_modules=False,
         update_on=[],
@@ -3561,6 +3566,9 @@ def render_market_pulse_dashboard(reference_override=None, timeframe_override=No
         """,
         unsafe_allow_html=True,
     )
+
+    # MARKETVECTOR_UI_FIT_V2 — light sidebar buttons after day-mode CSS
+    st.markdown(_mv_sidebar_button_css(), unsafe_allow_html=True)
 
     db = resolve_db()
     df = load_snapshot(str(db), reference, timeframe)
