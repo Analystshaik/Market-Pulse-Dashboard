@@ -1721,18 +1721,43 @@ def render_client_dashboard(reference: str, timeframe: str):
     else:
         pending_hold = pd.Series(False, index=stock.index)
 
-    if "visible_default" in stock.columns:
-        normal_visibility = pd.to_numeric(
-            stock["visible_default"], errors="coerce"
+    # MARKETVECTOR_TBT_GATE_HANDOFF_V1
+    tbt_admitted_symbols = set()
+    if reference == "TBT" and weekly_valid and "tbt_research_admitted" in stock:
+        admitted = pd.to_numeric(stock["tbt_research_admitted"], errors="coerce").eq(1)
+        tbt_admitted_symbols = set(stock.loc[admitted, "symbol"])
+        stock = stock.copy()
+        native_valid = pd.to_numeric(
+            stock.get("client_trade_valid", pd.Series(0, index=stock.index)),
+            errors="coerce",
+        ).eq(1)
+        ma_ok = pd.to_numeric(
+            stock.get("visible_default", pd.Series(1, index=stock.index)),
+            errors="coerce",
         ).fillna(1).eq(1)
-        stock = stock[normal_visibility | pending_hold].copy()
-        pending_hold = pending_hold.reindex(stock.index, fill_value=False)
+        upside_ok = stock.apply(_passes_minimum_upside, axis=1)
+        blocked_buy = admitted & native_valid & ~(ma_ok & upside_ok)
+        stock.loc[blocked_buy, "client_signal"] = "Hold"
+        stock.loc[blocked_buy, ["client_trade_valid", "client_actionable_now", "top_actionable_flag"]] = 0
+        stock.loc[blocked_buy & ~ma_ok, "trade_caution_comment"] = "Hold: MA200 extension"
+        stock.loc[blocked_buy & ma_ok & ~upside_ok, "trade_caution_comment"] = (
+            "Hold: analyst upside below 25% or target unavailable"
+        )
+        stock.loc[blocked_buy, "trade_risk_level"] = "BLOCKED"
+        stock = stock[(ma_ok & upside_ok) | admitted].copy()
+    else:
+        if "visible_default" in stock.columns:
+            normal_visibility = pd.to_numeric(
+                stock["visible_default"], errors="coerce"
+            ).fillna(1).eq(1)
+            stock = stock[normal_visibility | pending_hold].copy()
+            pending_hold = pending_hold.reindex(stock.index, fill_value=False)
 
-    # Preserve the existing 25% upside screen on real trading-signal rows.
-    # Exempt ONLY TLT research-pending HOLD candidates, not actionable Buys.
-    stock = stock[
-        stock.apply(_passes_minimum_upside, axis=1) | pending_hold
-    ].copy()
+        # Preserve the existing 25% upside screen on real trading-signal rows.
+        # Exempt ONLY TLT research-pending HOLD candidates, not actionable Buys.
+        stock = stock[
+            stock.apply(_passes_minimum_upside, axis=1) | pending_hold
+        ].copy()
 
     base_watch = _dedupe_watch_list(stock)
     preview = _client_grid_frame(base_watch, reference, timeframe, weekly_valid)
@@ -1851,7 +1876,7 @@ def render_client_dashboard(reference: str, timeframe: str):
         render_research_grid(
             db_path=db,
             timeframe=timeframe,
-            filter_state=filter_state,
+            filter_state=filter_state, admitted_symbols=tbt_admitted_symbols,
         )
 
     # TLT_RESEARCH_VISIBILITY_GRID_V1 — research-only third grid; Buy rules unchanged.

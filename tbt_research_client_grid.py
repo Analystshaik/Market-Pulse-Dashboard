@@ -118,13 +118,14 @@ def _load(path:str,mtime_ns:int):
     return a,b,g.iloc[0].to_dict() if not g.empty else None
 
 
-def render_research_grid(db_path,timeframe,filter_state):
+# MARKETVECTOR_TBT_GATE_HANDOFF_V1
+def render_research_grid(db_path, timeframe, filter_state, admitted_symbols=None):
     """Called at the end of BOTH TBT client dashboard render functions."""
     import client_actionable_dashboard as common
     path=Path(db_path)
     st.markdown('---')
-    st.markdown("<div class='grid-title'>Potential Trades After the TBT Weekly Gate Opens — Research Watch</div>",unsafe_allow_html=True)
-    st.caption('Every qualifying TBT Positive Research / Watch stock is included, even when absent from Actionable Now / On Hold or below the 25% analyst-upside trade screen. This is a research grid, NOT an automatic future Buy list.')
+    st.markdown("<div class='grid-title'>TBT Research Watch</div>",unsafe_allow_html=True)
+    st.caption('Research-qualified stocks awaiting admission to the current follower lists.')
     if not path.is_file():
         st.warning('Research cloud DB not found. Refresh the cloud export first.')
         return
@@ -153,13 +154,18 @@ def render_research_grid(db_path,timeframe,filter_state):
     if research.empty:
         st.info('No research-qualified candidates are present in the export.')
         return
-    model=make_rows(research,context,gate)
+    total = research["symbol"].nunique()
+    admitted = research["symbol"].isin(admitted_symbols or ())
+    if admitted.all():
+        st.info(f"All {total} research candidates are in the current follower lists.")
+        return
+    model=make_rows(research.loc[~admitted],context,gate)
     frame=build_frame(model,timeframe,common._client_grid_frame)
     # Match global sidebar filters; a filter may hide candidates, but never
     # remove candidates from the underlying research data.
     frame=common._filter_grid(frame,filter_state['search'],filter_state['signals'],
                               filter_state['confidences'],filter_state['ratings'])
-    st.caption(f'{len(model)} distinct research candidates in the export · {len(frame)} match the current sidebar filters · "Confidence" is statistical research quality, not an automatic Buy.')
+    st.caption(f'{len(model)} of {total} research candidates remain on watch · {len(frame)} match sidebar filters.')
     key=f'TBT_{timeframe}_research_watch'
     # RESEARCH_GRID_COMPACT_COLUMNS_v1.0 — watch-grid-only display, no DB changes
     from research_compact_columns import compact_research_frame
